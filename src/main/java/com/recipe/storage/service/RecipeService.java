@@ -538,7 +538,8 @@ public class RecipeService {
         if (cursor != null) {
           query = query.startAfter(cursor);
         }
-        query = query.limit(size);
+        // Fetch size+1 items per batch so we can detect whether a next page exists after merging.
+        query = query.limit(size + 1);
         query.get().get().getDocuments()
             .forEach(doc -> allRecipes.add(doc.toObject(Recipe.class)));
       }
@@ -553,6 +554,8 @@ public class RecipeService {
         return b.getCreatedAt().compareTo(a.getCreatedAt());
       });
 
+      // allRecipes.size() > size means there is at least one more result beyond this page.
+      boolean hasNextPage = allRecipes.size() > size;
       List<Recipe> page = allRecipes.subList(0, Math.min(size, allRecipes.size()));
 
       List<RecipeResponse> recipes = new ArrayList<>();
@@ -570,7 +573,7 @@ public class RecipeService {
       }
 
       String nextPageToken = null;
-      if (page.size() == size && !page.isEmpty()) {
+      if (hasNextPage && !page.isEmpty()) {
         java.time.Instant lastCreatedAt = page.get(page.size() - 1).getCreatedAt();
         if (lastCreatedAt != null) {
           String cursorStr = lastCreatedAt.getEpochSecond() + "," + lastCreatedAt.getNano();
