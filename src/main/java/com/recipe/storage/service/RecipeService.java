@@ -47,6 +47,9 @@ public class RecipeService {
   @Autowired(required = false)
   private FirebaseAuth firebaseAuth;
 
+  @Autowired(required = false)
+  private FollowService followService;
+
   @Value("${firestore.collection.recipes}")
   private String recipesCollection;
 
@@ -478,6 +481,137 @@ public class RecipeService {
       log.error("Error fetching public recipes from Firestore", e);
       throw new RuntimeException("Failed to fetch public recipes", e);
     }
+  }
+
+  /**
+   * Get the personalised feed for a user: public recipes from users they follow,
+   * ordered by creation date descending with cursor-based pagination.
+   *
+   * @param userId    the Firebase UID of the requesting user
+   * @param pageToken opaque cursor token from a previous response (null for first page)
+   * @param size      number of recipes per page (min 1, max 100)
+   * @return paginated feed of public recipes from followed users
+   */
+  public PagedRecipeResponse getFeed(String userId, String pageToken, int size) {
+    if (size < 1) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Page size must be at least 1");
+    }
+    if (size > 100) {
+      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Page size must not exceed 100");
+    }
+
+    Timestamp cursor = null;
+    if (pageToken != null && !pageToken.isEmpty()) {
+      cursor = decodePageToken(pageToken);
+    }
+
+    List<String> followingIds = followService != null
+        ? followService.getFollowingIds(userId)
+        : List.of();
+
+    if (followingIds.isEmpty()) {
+      log.info("Feed for user {}: following no one, returning empty feed", userId);
+      return emptyFeedResponse(size);
+    }
+
+    if (firestore == null) {
+      log.warn("Firestore not configured - returning empty feed");
+      return emptyFeedResponse(size);
+    }
+
+    List<List<String>> batches = partitionList(followingIds, 30);
+    try {
+      long totalCount = 0;
+      for (List<String> batch : batches) {
+        Query baseQuery = firestore.collection(recipesCollection)
+            .whereIn("userId", batch)
+            .whereEqualTo("isPublic", true);
+        totalCount += baseQuery.count().get().get().getCount();
+      }
+
+      List<Recipe> allRecipes = new ArrayList<>();
+      for (List<String> batch : batches) {
+        Query query = firestore.collection(recipesCollection)
+            .whereIn("userId", batch)
+            .whereEqualTo("isPublic", true)
+            .orderBy("createdAt", Query.Direction.DESCENDING);
+        if (cursor != null) {
+          query = query.startAfter(cursor);
+        }
+        query = query.limit(size);
+        query.get().get().getDocuments()
+            .forEach(doc -> allRecipes.add(doc.toObject(Recipe.class)));
+      }
+
+      allRecipes.sort((a, b) -> {
+        if (b.getCreatedAt() == null) {
+          return -1;
+        }
+        if (a.getCreatedAt() == null) {
+          return 1;
+        }
+        return b.getCreatedAt().compareTo(a.getCreatedAt());
+      });
+
+      List<Recipe> page = allRecipes.subList(0, Math.min(size, allRecipes.size()));
+
+      List<RecipeResponse> recipes = new ArrayList<>();
+      Map<String, String> displayNameCache = new HashMap<>();
+      for (Recipe recipe : page) {
+        RecipeResponse response = mapToResponse(recipe);
+        String uid = recipe.getUserId();
+        if (uid != null) {
+          if (!displayNameCache.containsKey(uid)) {
+            displayNameCache.put(uid, resolveDisplayName(uid));
+          }
+          response.setAuthorDisplayName(displayNameCache.get(uid));
+        }
+        recipes.add(response);
+      }
+
+      String nextPageToken = null;
+      if (page.size() == size && !page.isEmpty()) {
+        java.time.Instant lastCreatedAt = page.get(page.size() - 1).getCreatedAt();
+        if (lastCreatedAt != null) {
+          String cursorStr = lastCreatedAt.getEpochSecond() + "," + lastCreatedAt.getNano();
+          nextPageToken = Base64.getUrlEncoder().withoutPadding()
+              .encodeToString(cursorStr.getBytes(StandardCharsets.UTF_8));
+        }
+      }
+
+      log.info("Feed for user {}: {} recipes returned (total={})", userId, recipes.size(),
+          totalCount);
+      return PagedRecipeResponse.builder()
+          .recipes(recipes)
+          .size(size)
+          .totalCount(totalCount)
+          .nextPageToken(nextPageToken)
+          .build();
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      log.error("Interrupted while fetching feed for user {}", userId, e);
+      throw new RuntimeException("Failed to fetch feed", e);
+    } catch (ExecutionException e) {
+      log.error("Error fetching feed for user {}", userId, e);
+      throw new RuntimeException("Failed to fetch feed", e);
+    }
+  }
+
+  private PagedRecipeResponse emptyFeedResponse(int size) {
+    return PagedRecipeResponse.builder()
+        .recipes(new ArrayList<>())
+        .size(size)
+        .totalCount(0)
+        .nextPageToken(null)
+        .build();
+  }
+
+  private static <T> List<List<T>> partitionList(List<T> list, int batchSize) {
+    List<List<T>> partitions = new ArrayList<>();
+    for (int i = 0; i < list.size(); i += batchSize) {
+      partitions.add(list.subList(i, Math.min(i + batchSize, list.size())));
+    }
+    return partitions;
   }
 
   /**
