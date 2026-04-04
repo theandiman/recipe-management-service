@@ -519,16 +519,12 @@ public class RecipeService {
       return emptyFeedResponse(size);
     }
 
+    // The same createdAt timestamp cursor is applied to each batch independently.
+    // This is correct because createdAt is a global ordering field shared by all recipes;
+    // every batch skips the same point in time, so merging and re-sorting across batches
+    // produces a consistent total ordering.
     List<List<String>> batches = partitionList(followingIds, 30);
     try {
-      long totalCount = 0;
-      for (List<String> batch : batches) {
-        Query baseQuery = firestore.collection(recipesCollection)
-            .whereIn("userId", batch)
-            .whereEqualTo("isPublic", true);
-        totalCount += baseQuery.count().get().get().getCount();
-      }
-
       List<Recipe> allRecipes = new ArrayList<>();
       for (List<String> batch : batches) {
         Query query = firestore.collection(recipesCollection)
@@ -582,12 +578,11 @@ public class RecipeService {
         }
       }
 
-      log.info("Feed for user {}: {} recipes returned (total={})", userId, recipes.size(),
-          totalCount);
+      log.info("Feed for user {}: {} recipes returned", userId, recipes.size());
       return PagedRecipeResponse.builder()
           .recipes(recipes)
           .size(size)
-          .totalCount(totalCount)
+          .totalCount(0)
           .nextPageToken(nextPageToken)
           .build();
     } catch (InterruptedException e) {
