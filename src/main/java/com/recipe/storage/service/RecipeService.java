@@ -1332,7 +1332,7 @@ public class RecipeService {
   /**
    * Map Recipe entity to RecipeResponse DTO.
    */
-  private RecipeResponse mapToResponse(Recipe recipe) {
+  RecipeResponse mapToResponse(Recipe recipe) {
     Map<String, Object> nutritionMap = null;
     if (recipe.getNutritionalInfo() != null
         && recipe.getNutritionalInfo().getPerServing() != null) {
