@@ -62,16 +62,6 @@ public class UserProfileService {
       DocumentSnapshot userDocument = userFuture.get();
 
       boolean hasFirestoreProfile = userDocument != null && userDocument.exists();
-      UserRecord authUser = null;
-
-      if (!hasFirestoreProfile) {
-        authUser = getAuthUser(uid);
-        if (authUser == null) {
-          log.warn("User profile not found in Firestore or Firebase Auth: {}", uid);
-          throw new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found");
-        }
-        log.info("Firestore profile missing for user {}, falling back to Firebase Auth", uid);
-      }
 
       String displayName = null;
       final String bio;
@@ -89,9 +79,21 @@ public class UserProfileService {
         bio = null;
       }
 
-      if ((displayName == null || displayName.isBlank() || avatarUrl == null || avatarUrl.isBlank())
-          && authUser == null) {
+      UserRecord authUser = null;
+      boolean needsAuthFallback = !hasFirestoreProfile
+          || displayName == null || displayName.isBlank()
+          || avatarUrl == null || avatarUrl.isBlank();
+
+      if (needsAuthFallback) {
         authUser = getAuthUser(uid);
+      }
+
+      if (!hasFirestoreProfile) {
+        if (authUser == null) {
+          log.warn("User profile not found in Firestore or Firebase Auth: {}", uid);
+          throw new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found");
+        }
+        log.info("Firestore profile missing for user {}, falling back to Firebase Auth", uid);
       }
 
       if ((displayName == null || displayName.isBlank()) && authUser != null) {
