@@ -5,6 +5,9 @@ import com.google.cloud.firestore.AggregateQuerySnapshot;
 import com.google.cloud.firestore.DocumentReference;
 import com.google.cloud.firestore.DocumentSnapshot;
 import com.google.cloud.firestore.Firestore;
+import com.google.firebase.auth.FirebaseAuth;
+import com.google.firebase.auth.FirebaseAuthException;
+import com.google.firebase.auth.UserRecord;
 import com.recipe.storage.dto.UserProfileResponse;
 import java.util.concurrent.ExecutionException;
 import lombok.extern.slf4j.Slf4j;
@@ -26,6 +29,9 @@ public class UserProfileService {
 
   @Autowired(required = false)
   private FollowService followService;
+
+  @Autowired(required = false)
+  private FirebaseAuth firebaseAuth;
 
   @Value("${firestore.collection.users}")
   private String usersCollection;
@@ -55,19 +61,47 @@ public class UserProfileService {
       ApiFuture<DocumentSnapshot> userFuture = userDocRef.get();
       DocumentSnapshot userDocument = userFuture.get();
 
-      if (userDocument == null || !userDocument.exists()) {
-        log.warn("User profile not found: {}", uid);
-        throw new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found");
+      boolean hasFirestoreProfile = userDocument != null && userDocument.exists();
+      UserRecord authUser = null;
+
+      if (!hasFirestoreProfile) {
+        authUser = getAuthUser(uid);
+        if (authUser == null) {
+          log.warn("User profile not found in Firestore or Firebase Auth: {}", uid);
+          throw new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found");
+        }
+        log.info("Firestore profile missing for user {}, falling back to Firebase Auth", uid);
       }
 
-      String displayName = userDocument.getString("displayName");
-      String bio = userDocument.getString("bio");
-      String avatarUrl = userDocument.getString("avatarUrl");
+      String displayName = null;
+      final String bio;
+      String avatarUrl = null;
+      Long rawFollowerCount = null;
+      Long rawFollowingCount = null;
 
-      Long rawFollowerCount = userDocument.getLong("followerCount");
+      if (hasFirestoreProfile) {
+        displayName = userDocument.getString("displayName");
+        bio = userDocument.getString("bio");
+        avatarUrl = userDocument.getString("avatarUrl");
+        rawFollowerCount = userDocument.getLong("followerCount");
+        rawFollowingCount = userDocument.getLong("followingCount");
+      } else {
+        bio = null;
+      }
+
+      if ((displayName == null || displayName.isBlank() || avatarUrl == null || avatarUrl.isBlank())
+          && authUser == null) {
+        authUser = getAuthUser(uid);
+      }
+
+      if ((displayName == null || displayName.isBlank()) && authUser != null) {
+        displayName = authUser.getDisplayName();
+      }
+      if ((avatarUrl == null || avatarUrl.isBlank()) && authUser != null) {
+        avatarUrl = authUser.getPhotoUrl();
+      }
+
       long followerCount = rawFollowerCount != null ? rawFollowerCount : 0L;
-
-      Long rawFollowingCount = userDocument.getLong("followingCount");
       long followingCount = rawFollowingCount != null ? rawFollowingCount : 0L;
 
       long publicRecipeCount = countPublicRecipes(uid);
@@ -126,6 +160,19 @@ public class UserProfileService {
           HttpStatus.SERVICE_UNAVAILABLE,
           "Failed to count public recipes",
           e);
+    }
+  }
+
+  private UserRecord getAuthUser(String uid) {
+    if (firebaseAuth == null) {
+      return null;
+    }
+
+    try {
+      return firebaseAuth.getUser(uid);
+    } catch (FirebaseAuthException e) {
+      log.warn("Failed to resolve Firebase Auth user for {}: {}", uid, e.getMessage());
+      return null;
     }
   }
 }
