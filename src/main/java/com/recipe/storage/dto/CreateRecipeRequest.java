@@ -48,6 +48,10 @@ public class CreateRecipeRequest {
     @Schema(description = "Cooking time in minutes", example = "20")
     private Integer cookTime;
 
+    @Positive(message = "Total time must be positive")
+    @Schema(description = "Total time in minutes (optional; computed as prepTime + cookTime if omitted)", example = "35")
+    private Integer totalTime;
+
     @NotNull(message = "Servings is required")
     @Positive(message = "Servings must be positive")
     @Schema(description = "Number of servings", example = "4", required = true)

@@ -44,6 +44,9 @@ public class RecipeResponse {
     @Schema(description = "Cooking time in minutes", example = "20")
     private Integer cookTime;
 
+    @Schema(description = "Total time in minutes (stored value or computed as prepTime + cookTime)", example = "35")
+    private Integer totalTime;
+
     @Schema(description = "Number of servings", example = "4")
     private Integer servings;
 
