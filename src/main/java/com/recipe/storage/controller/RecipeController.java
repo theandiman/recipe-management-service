@@ -389,4 +389,71 @@ public class RecipeController {
             MDC.remove("recipe.id");
         }
     }
+
+    /**
+     * Like a recipe for the authenticated user.
+     * Idempotent – calling this when the recipe is already liked is a no-op.
+     * Requires Firebase authentication.
+     *
+     * @param recipeId The recipe ID to like
+     * @param userId   The authenticated user's Firebase UID (injected by auth filter)
+     * @return 204 No Content on success
+     */
+    @PostMapping("/{recipeId}/like")
+    @Operation(summary = "Like a recipe", description = "Likes a recipe for the authenticated user. "
+            + "Idempotent – calling this when the recipe is already liked is a no-op. "
+            + "Requires Firebase authentication token in Authorization header.")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "204", description = "Recipe liked successfully", content = @Content),
+            @ApiResponse(responseCode = "401", description = "Unauthorized - invalid or missing Firebase token",
+                    content = @Content),
+            @ApiResponse(responseCode = "404", description = "Recipe not found", content = @Content),
+            @ApiResponse(responseCode = "503", description = "Database not configured", content = @Content)
+    })
+    public ResponseEntity<Void> likeRecipe(
+            @Parameter(description = "Recipe ID to like", required = true) @PathVariable String recipeId,
+            @Parameter(hidden = true) @RequestAttribute("userId") String userId) {
+
+        MDC.put("recipe.id", recipeId);
+        try {
+            log.info("Liking recipe {} for user {}", recipeId, userId);
+            recipeService.likeRecipe(recipeId, userId);
+            return ResponseEntity.noContent().build();
+        } finally {
+            MDC.remove("recipe.id");
+        }
+    }
+
+    /**
+     * Unlike a recipe for the authenticated user.
+     * Idempotent – calling this when the recipe is not liked is a no-op.
+     * Requires Firebase authentication.
+     *
+     * @param recipeId The recipe ID to unlike
+     * @param userId   The authenticated user's Firebase UID (injected by auth filter)
+     * @return 204 No Content on success
+     */
+    @DeleteMapping("/{recipeId}/like")
+    @Operation(summary = "Unlike a recipe", description = "Removes a like from a recipe for the authenticated user. "
+            + "Idempotent – calling this when the recipe is not liked is a no-op. "
+            + "Requires Firebase authentication token in Authorization header.")
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "204", description = "Recipe unliked successfully", content = @Content),
+            @ApiResponse(responseCode = "401", description = "Unauthorized - invalid or missing Firebase token",
+                    content = @Content),
+            @ApiResponse(responseCode = "503", description = "Database not configured", content = @Content)
+    })
+    public ResponseEntity<Void> unlikeRecipe(
+            @Parameter(description = "Recipe ID to unlike", required = true) @PathVariable String recipeId,
+            @Parameter(hidden = true) @RequestAttribute("userId") String userId) {
+
+        MDC.put("recipe.id", recipeId);
+        try {
+            log.info("Unliking recipe {} for user {}", recipeId, userId);
+            recipeService.unlikeRecipe(recipeId, userId);
+            return ResponseEntity.noContent().build();
+        } finally {
+            MDC.remove("recipe.id");
+        }
+    }
 }

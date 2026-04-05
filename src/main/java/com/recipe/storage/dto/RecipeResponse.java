@@ -85,4 +85,12 @@ public class RecipeResponse {
             example = "false")
     @JsonProperty("isSavedByCurrentUser")
     private boolean isSavedByCurrentUser;
+
+    @Schema(description = "Number of likes this recipe has received", example = "42")
+    private int likeCount;
+
+    @Schema(description = "Whether this recipe is liked by the current authenticated user",
+            example = "false")
+    @JsonProperty("isLikedByCurrentUser")
+    private boolean isLikedByCurrentUser;
 }

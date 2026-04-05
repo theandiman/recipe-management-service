@@ -215,4 +215,44 @@ class RecipeControllerIntegrationTest {
     // Note: GET endpoint tests are skipped in integration tests
     // because they require Firestore to be configured.
     // These endpoints will be tested in manual/E2E tests with real Firestore.
+
+    // ── Like / Unlike endpoints ───────────────────────────────────────────────
+
+    @Test
+    void likeRecipe_WithNoFirestore_ReturnsServiceUnavailable() throws Exception {
+        // Without Firestore, liking a recipe returns 503
+        mockMvc.perform(post("/api/recipes/some-id/like")
+                .header("X-User-ID", "test-user"))
+                .andExpect(status().isServiceUnavailable());
+    }
+
+    @Test
+    void unlikeRecipe_WithNoFirestore_ReturnsServiceUnavailable() throws Exception {
+        // Without Firestore, unliking a recipe returns 503
+        mockMvc.perform(delete("/api/recipes/some-id/like")
+                .header("X-User-ID", "test-user"))
+                .andExpect(status().isServiceUnavailable());
+    }
+
+    @Test
+    void createRecipe_ResponseContainsLikeCountAndIsLikedByCurrentUser() throws Exception {
+        CreateRecipeRequest request = CreateRecipeRequest.builder()
+                .title("Like Test Recipe")
+                .description("A recipe to test like fields")
+                .ingredients(List.of("Ingredient"))
+                .instructions(List.of("Step 1"))
+                .prepTime(5)
+                .cookTime(10)
+                .servings(2)
+                .source("manual")
+                .build();
+
+        mockMvc.perform(post("/api/recipes")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(request))
+                .header("X-User-ID", "test-user"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.likeCount").value(0))
+                .andExpect(jsonPath("$.isLikedByCurrentUser").value(false));
+    }
 }

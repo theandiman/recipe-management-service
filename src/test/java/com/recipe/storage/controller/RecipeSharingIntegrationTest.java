@@ -12,6 +12,7 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.List;
 
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -65,6 +66,20 @@ class RecipeSharingIntegrationTest {
         @Test
         void getPublicRecipe_NoFirestore_ReturnsServiceUnavailable() throws Exception {
                 mockMvc.perform(get("/api/recipes/some-recipe-id/public"))
+                                .andExpect(status().isServiceUnavailable());
+        }
+
+        @Test
+        void likeRecipe_NoFirestore_ReturnsServiceUnavailable() throws Exception {
+                mockMvc.perform(post("/api/recipes/some-recipe-id/like")
+                                .header("X-User-ID", "user123"))
+                                .andExpect(status().isServiceUnavailable());
+        }
+
+        @Test
+        void unlikeRecipe_NoFirestore_ReturnsServiceUnavailable() throws Exception {
+                mockMvc.perform(delete("/api/recipes/some-recipe-id/like")
+                                .header("X-User-ID", "user123"))
                                 .andExpect(status().isServiceUnavailable());
         }
 }
