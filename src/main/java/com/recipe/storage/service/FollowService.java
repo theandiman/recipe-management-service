@@ -16,9 +16,11 @@ import com.recipe.storage.dto.PagedFollowResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
+import java.util.stream.Collectors;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -212,6 +214,39 @@ public class FollowService {
     } catch (ExecutionException e) {
       log.warn("Error checking follow status {} -> {}", followerId, followedId, e);
       return false;
+    }
+  }
+
+  /**
+   * Get all UIDs that the given user is following, up to 500 entries.
+   *
+   * <p>Returns an empty list rather than throwing when Firestore is unavailable, so callers
+   * can degrade gracefully (e.g. returning an empty feed).
+   *
+   * @param uid the Firebase UID of the user whose following list to retrieve
+   * @return list of followed user UIDs (may be empty)
+   */
+  public List<String> getFollowingIds(String uid) {
+    if (firestore == null) {
+      return Collections.emptyList();
+    }
+    try {
+      QuerySnapshot snapshot = firestore.collection(followsCollection)
+          .document(uid)
+          .collection(FOLLOWING_SUBCOLLECTION)
+          .limit(500)
+          .get()
+          .get();
+      return snapshot.getDocuments().stream()
+          .map(DocumentSnapshot::getId)
+          .collect(Collectors.toList());
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      log.warn("Interrupted while fetching following IDs for user {}", uid, e);
+      return Collections.emptyList();
+    } catch (ExecutionException e) {
+      log.warn("Error fetching following IDs for user {}", uid, e);
+      return Collections.emptyList();
     }
   }
 

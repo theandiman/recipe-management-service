@@ -57,6 +57,9 @@ class RecipeServiceTest {
     @Mock
     private FirebaseAuth firebaseAuth;
 
+    @Mock
+    private FollowService followService;
+
     private RecipeService recipeService;
 
     @BeforeEach
@@ -66,6 +69,7 @@ class RecipeServiceTest {
         ReflectionTestUtils.setField(recipeService, "recipesCollection", "recipes");
         ReflectionTestUtils.setField(recipeService, "savedRecipesCollection", "savedRecipes");
         ReflectionTestUtils.setField(recipeService, "firebaseAuth", firebaseAuth);
+        ReflectionTestUtils.setField(recipeService, "followService", followService);
     }
 
         @Test
@@ -1188,6 +1192,182 @@ class RecipeServiceTest {
         // Assert
         assertNotNull(response);
         assertTrue(response.isSavedByCurrentUser());
+    }
+
+    // ── getFeed tests ─────────────────────────────────────────────────────────
+
+    @Test
+    void getFeed_SizeExceedsMax_ThrowsBadRequest() {
+        org.springframework.web.server.ResponseStatusException ex = assertThrows(
+                org.springframework.web.server.ResponseStatusException.class,
+                () -> recipeService.getFeed("user1", null, 101));
+        assertEquals(org.springframework.http.HttpStatus.BAD_REQUEST, ex.getStatusCode());
+    }
+
+    @Test
+    void getFeed_ZeroSize_ThrowsBadRequest() {
+        org.springframework.web.server.ResponseStatusException ex = assertThrows(
+                org.springframework.web.server.ResponseStatusException.class,
+                () -> recipeService.getFeed("user1", null, 0));
+        assertEquals(org.springframework.http.HttpStatus.BAD_REQUEST, ex.getStatusCode());
+    }
+
+    @Test
+    void getFeed_InvalidPageToken_ThrowsBadRequest() {
+        org.springframework.web.server.ResponseStatusException ex = assertThrows(
+                org.springframework.web.server.ResponseStatusException.class,
+                () -> recipeService.getFeed("user1", "not-valid-base64!!!", 10));
+        assertEquals(org.springframework.http.HttpStatus.BAD_REQUEST, ex.getStatusCode());
+    }
+
+    @Test
+    void getFeed_EmptyFollowingList_ReturnsEmptyFeed() {
+        when(followService.getFollowingIds("user1")).thenReturn(List.of());
+
+        PagedRecipeResponse response = recipeService.getFeed("user1", null, 20);
+
+        assertNotNull(response);
+        assertTrue(response.getRecipes().isEmpty());
+        assertEquals(20, response.getSize());
+        assertEquals(0, response.getTotalCount());
+        assertNull(response.getNextPageToken());
+    }
+
+    @Test
+    void getFeed_NullFollowService_ReturnsEmptyFeed() {
+        RecipeService serviceWithoutFollowService = new RecipeService();
+        ReflectionTestUtils.setField(serviceWithoutFollowService, "firestore", firestore);
+        ReflectionTestUtils.setField(serviceWithoutFollowService, "recipesCollection", "recipes");
+        ReflectionTestUtils.setField(serviceWithoutFollowService, "savedRecipesCollection",
+                "savedRecipes");
+
+        PagedRecipeResponse response = serviceWithoutFollowService.getFeed("user1", null, 20);
+
+        assertNotNull(response);
+        assertTrue(response.getRecipes().isEmpty());
+        assertEquals(20, response.getSize());
+        assertNull(response.getNextPageToken());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void getFeed_WithFirestore_ReturnsRecipesFromFollowedUsers()
+            throws ExecutionException, InterruptedException {
+        when(followService.getFollowingIds("user1")).thenReturn(List.of("followed1"));
+
+        CollectionReference collectionRef = mock(CollectionReference.class);
+        when(firestore.collection("recipes")).thenReturn(collectionRef);
+
+        Query whereInQuery = mock(Query.class);
+        when(collectionRef.whereIn(eq("userId"), any())).thenReturn(whereInQuery);
+        Query publicQuery = mock(Query.class);
+        when(whereInQuery.whereEqualTo("isPublic", true)).thenReturn(publicQuery);
+        Query orderedQuery = mock(Query.class);
+        when(publicQuery.orderBy("createdAt", Query.Direction.DESCENDING)).thenReturn(orderedQuery);
+        Query limitedQuery = mock(Query.class);
+        when(orderedQuery.limit(21)).thenReturn(limitedQuery); // size+1 = 21
+
+        ApiFuture<QuerySnapshot> queryFuture = mock(ApiFuture.class);
+        QuerySnapshot querySnapshot = mock(QuerySnapshot.class);
+        when(limitedQuery.get()).thenReturn(queryFuture);
+        when(queryFuture.get()).thenReturn(querySnapshot);
+
+        QueryDocumentSnapshot docSnapshot = mock(QueryDocumentSnapshot.class);
+        Recipe recipe = Recipe.builder()
+                .id("r1").userId("followed1").recipeName("Pasta").publicRecipe(true)
+                .createdAt(Instant.ofEpochSecond(1743000000L)).build();
+        when(docSnapshot.toObject(Recipe.class)).thenReturn(recipe);
+        when(querySnapshot.getDocuments()).thenReturn(List.of(docSnapshot));
+
+        PagedRecipeResponse response = recipeService.getFeed("user1", null, 20);
+
+        assertNotNull(response);
+        assertEquals(1, response.getRecipes().size());
+        assertEquals(20, response.getSize());
+        // only 1 result which is < size=20, so no next page token
+        assertNull(response.getNextPageToken());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void getFeed_HasMoreThanPageSize_SetsNextPageToken()
+            throws ExecutionException, InterruptedException {
+        when(followService.getFollowingIds("user1")).thenReturn(List.of("followed1"));
+
+        CollectionReference collectionRef = mock(CollectionReference.class);
+        when(firestore.collection("recipes")).thenReturn(collectionRef);
+
+        Query whereInQuery = mock(Query.class);
+        when(collectionRef.whereIn(eq("userId"), any())).thenReturn(whereInQuery);
+        Query publicQuery = mock(Query.class);
+        when(whereInQuery.whereEqualTo("isPublic", true)).thenReturn(publicQuery);
+        Query orderedQuery = mock(Query.class);
+        when(publicQuery.orderBy("createdAt", Query.Direction.DESCENDING)).thenReturn(orderedQuery);
+        Query limitedQuery = mock(Query.class);
+        when(orderedQuery.limit(3)).thenReturn(limitedQuery); // size+1 = 3
+
+        ApiFuture<QuerySnapshot> queryFuture = mock(ApiFuture.class);
+        QuerySnapshot querySnapshot = mock(QuerySnapshot.class);
+        when(limitedQuery.get()).thenReturn(queryFuture);
+        when(queryFuture.get()).thenReturn(querySnapshot);
+
+        // Return size+1=3 docs to signal there's a next page
+        QueryDocumentSnapshot doc1 = mock(QueryDocumentSnapshot.class);
+        QueryDocumentSnapshot doc2 = mock(QueryDocumentSnapshot.class);
+        QueryDocumentSnapshot doc3 = mock(QueryDocumentSnapshot.class);
+        Recipe r1 = Recipe.builder().id("r1").userId("followed1").recipeName("A").publicRecipe(true)
+                .createdAt(Instant.ofEpochSecond(1743000002L)).build();
+        Recipe r2 = Recipe.builder().id("r2").userId("followed1").recipeName("B").publicRecipe(true)
+                .createdAt(Instant.ofEpochSecond(1743000001L)).build();
+        Recipe r3 = Recipe.builder().id("r3").userId("followed1").recipeName("C").publicRecipe(true)
+                .createdAt(Instant.ofEpochSecond(1743000000L)).build();
+        when(doc1.toObject(Recipe.class)).thenReturn(r1);
+        when(doc2.toObject(Recipe.class)).thenReturn(r2);
+        when(doc3.toObject(Recipe.class)).thenReturn(r3);
+        when(querySnapshot.getDocuments()).thenReturn(List.of(doc1, doc2, doc3));
+
+        PagedRecipeResponse response = recipeService.getFeed("user1", null, 2);
+
+        assertNotNull(response);
+        assertEquals(2, response.getRecipes().size()); // only size=2 items returned
+        assertNotNull(response.getNextPageToken()); // 3 results > size=2 → token present
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void getFeed_WithValidPageToken_StartsAfterCursor()
+            throws ExecutionException, InterruptedException {
+        String token = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString("1743000000,0".getBytes(StandardCharsets.UTF_8));
+
+        when(followService.getFollowingIds("user1")).thenReturn(List.of("followed1"));
+
+        CollectionReference collectionRef = mock(CollectionReference.class);
+        when(firestore.collection("recipes")).thenReturn(collectionRef);
+
+        Query whereInQuery = mock(Query.class);
+        when(collectionRef.whereIn(eq("userId"), any())).thenReturn(whereInQuery);
+        Query publicQuery = mock(Query.class);
+        when(whereInQuery.whereEqualTo("isPublic", true)).thenReturn(publicQuery);
+        Query orderedQuery = mock(Query.class);
+        when(publicQuery.orderBy("createdAt", Query.Direction.DESCENDING)).thenReturn(orderedQuery);
+        Query afterQuery = mock(Query.class);
+        when(orderedQuery.startAfter(any(Timestamp.class))).thenReturn(afterQuery);
+        Query limitedQuery = mock(Query.class);
+        when(afterQuery.limit(11)).thenReturn(limitedQuery); // size+1 = 11
+
+        ApiFuture<QuerySnapshot> queryFuture = mock(ApiFuture.class);
+        QuerySnapshot querySnapshot = mock(QuerySnapshot.class);
+        when(limitedQuery.get()).thenReturn(queryFuture);
+        when(queryFuture.get()).thenReturn(querySnapshot);
+        when(querySnapshot.getDocuments()).thenReturn(List.of());
+
+        PagedRecipeResponse response = recipeService.getFeed("user1", token, 10);
+
+        assertNotNull(response);
+        assertTrue(response.getRecipes().isEmpty());
+        assertNull(response.getNextPageToken());
+        verify(orderedQuery).startAfter(any(Timestamp.class));
     }
 }
 

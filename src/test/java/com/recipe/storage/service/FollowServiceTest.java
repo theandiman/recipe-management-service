@@ -839,4 +839,117 @@ class FollowServiceTest {
 
         assertFalse(followService.isFollowing("follower1", "followed1"));
     }
+
+    // -------------------------------------------------------------------------
+    // getFollowingIds tests
+    // -------------------------------------------------------------------------
+
+    @Test
+    void getFollowingIds_NullFirestore_ReturnsEmptyList() {
+        FollowService noFirestoreService = new FollowService();
+        ReflectionTestUtils.setField(noFirestoreService, "followsCollection", "follows");
+        ReflectionTestUtils.setField(noFirestoreService, "usersCollection", "users");
+
+        List<String> result = noFirestoreService.getFollowingIds("user1");
+        assertNotNull(result);
+        assertTrue(result.isEmpty());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void getFollowingIds_WithFirestore_ReturnsIds() throws Exception {
+        CollectionReference followsCol = mock(CollectionReference.class);
+        DocumentReference userDoc = mock(DocumentReference.class);
+        CollectionReference followingSubcol = mock(CollectionReference.class);
+        Query limitedQuery = mock(Query.class);
+        ApiFuture<QuerySnapshot> queryFuture = mock(ApiFuture.class);
+        QuerySnapshot snapshot = mock(QuerySnapshot.class);
+        QueryDocumentSnapshot followDoc1 = mock(QueryDocumentSnapshot.class);
+        QueryDocumentSnapshot followDoc2 = mock(QueryDocumentSnapshot.class);
+
+        when(firestore.collection("follows")).thenReturn(followsCol);
+        when(followsCol.document("user1")).thenReturn(userDoc);
+        when(userDoc.collection("following")).thenReturn(followingSubcol);
+        when(followingSubcol.limit(anyInt())).thenReturn(limitedQuery);
+        when(limitedQuery.get()).thenReturn(queryFuture);
+        when(queryFuture.get()).thenReturn(snapshot);
+        when(followDoc1.getId()).thenReturn("followed1");
+        when(followDoc2.getId()).thenReturn("followed2");
+        when(snapshot.getDocuments()).thenReturn(List.of(followDoc1, followDoc2));
+
+        List<String> result = followService.getFollowingIds("user1");
+
+        assertEquals(2, result.size());
+        assertTrue(result.contains("followed1"));
+        assertTrue(result.contains("followed2"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void getFollowingIds_WithFirestore_EmptyResult_ReturnsEmptyList() throws Exception {
+        CollectionReference followsCol = mock(CollectionReference.class);
+        DocumentReference userDoc = mock(DocumentReference.class);
+        CollectionReference followingSubcol = mock(CollectionReference.class);
+        Query limitedQuery = mock(Query.class);
+        ApiFuture<QuerySnapshot> queryFuture = mock(ApiFuture.class);
+        QuerySnapshot snapshot = mock(QuerySnapshot.class);
+
+        when(firestore.collection("follows")).thenReturn(followsCol);
+        when(followsCol.document("user1")).thenReturn(userDoc);
+        when(userDoc.collection("following")).thenReturn(followingSubcol);
+        when(followingSubcol.limit(anyInt())).thenReturn(limitedQuery);
+        when(limitedQuery.get()).thenReturn(queryFuture);
+        when(queryFuture.get()).thenReturn(snapshot);
+        when(snapshot.getDocuments()).thenReturn(Collections.emptyList());
+
+        List<String> result = followService.getFollowingIds("user1");
+
+        assertNotNull(result);
+        assertTrue(result.isEmpty());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void getFollowingIds_InterruptedException_ReturnsEmptyList() throws Exception {
+        CollectionReference followsCol = mock(CollectionReference.class);
+        DocumentReference userDoc = mock(DocumentReference.class);
+        CollectionReference followingSubcol = mock(CollectionReference.class);
+        Query limitedQuery = mock(Query.class);
+        ApiFuture<QuerySnapshot> queryFuture = mock(ApiFuture.class);
+
+        when(firestore.collection("follows")).thenReturn(followsCol);
+        when(followsCol.document("user1")).thenReturn(userDoc);
+        when(userDoc.collection("following")).thenReturn(followingSubcol);
+        when(followingSubcol.limit(anyInt())).thenReturn(limitedQuery);
+        when(limitedQuery.get()).thenReturn(queryFuture);
+        when(queryFuture.get()).thenThrow(new InterruptedException("interrupted"));
+
+        List<String> result = followService.getFollowingIds("user1");
+
+        assertNotNull(result);
+        assertTrue(result.isEmpty());
+        assertTrue(Thread.interrupted()); // clear the interrupted flag set by the method
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void getFollowingIds_ExecutionException_ReturnsEmptyList() throws Exception {
+        CollectionReference followsCol = mock(CollectionReference.class);
+        DocumentReference userDoc = mock(DocumentReference.class);
+        CollectionReference followingSubcol = mock(CollectionReference.class);
+        Query limitedQuery = mock(Query.class);
+        ApiFuture<QuerySnapshot> queryFuture = mock(ApiFuture.class);
+
+        when(firestore.collection("follows")).thenReturn(followsCol);
+        when(followsCol.document("user1")).thenReturn(userDoc);
+        when(userDoc.collection("following")).thenReturn(followingSubcol);
+        when(followingSubcol.limit(anyInt())).thenReturn(limitedQuery);
+        when(limitedQuery.get()).thenReturn(queryFuture);
+        when(queryFuture.get()).thenThrow(new ExecutionException("error", new RuntimeException()));
+
+        List<String> result = followService.getFollowingIds("user1");
+
+        assertNotNull(result);
+        assertTrue(result.isEmpty());
+    }
 }
