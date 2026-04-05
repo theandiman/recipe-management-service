@@ -367,4 +367,22 @@ class RecipeIntegrationTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).contains("openapi");
     }
+
+    @Test
+    @Order(19)
+    @DisplayName("Like recipe - created recipe should have likeCount=0 and isLikedByCurrentUser=false initially")
+    void testLikeCountInitialState() {
+        CreateRecipeRequest request = createTestRecipe("Like Test Recipe", false);
+        HttpEntity<CreateRecipeRequest> entity = new HttpEntity<>(request, getAuthHeaders(TEST_USER_ID));
+
+        ResponseEntity<RecipeResponse> response = restTemplate.postForEntity(
+                getBaseUrl(),
+                entity,
+                RecipeResponse.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().getLikeCount()).isEqualTo(0);
+        assertThat(response.getBody().isLikedByCurrentUser()).isFalse();
+    }
 }

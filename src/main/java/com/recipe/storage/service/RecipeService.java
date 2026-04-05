@@ -5,6 +5,7 @@ import com.google.cloud.Timestamp;
 import com.google.cloud.firestore.AggregateQuerySnapshot;
 import com.google.cloud.firestore.DocumentReference;
 import com.google.cloud.firestore.DocumentSnapshot;
+import com.google.cloud.firestore.FieldValue;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.Query;
 import com.google.cloud.firestore.QuerySnapshot;
@@ -55,6 +56,9 @@ public class RecipeService {
 
   @Value("${firestore.collection.saved-recipes:savedRecipes}")
   private String savedRecipesCollection;
+
+  @Value("${firestore.collection.likes:likes}")
+  private String likesCollection;
 
   // In-memory store for testing when Firestore is not available
   private final ConcurrentHashMap<String, Recipe> mockStore = new ConcurrentHashMap<>();
@@ -372,7 +376,9 @@ public class RecipeService {
       List<RecipeResponse> recipes = new ArrayList<>();
       querySnapshot.getDocuments().forEach(doc -> {
         Recipe recipe = doc.toObject(Recipe.class);
-        recipes.add(mapToResponse(recipe));
+        RecipeResponse response = mapToResponse(recipe);
+        response.setLikeCount(extractLikeCount(doc));
+        recipes.add(response);
       });
 
       // Sort in-memory by createdAt (newest first)
@@ -393,6 +399,22 @@ public class RecipeService {
             .get();
         for (int i = 0; i < bookmarkDocs.size(); i++) {
           recipes.get(i).setSavedByCurrentUser(bookmarkDocs.get(i).exists());
+        }
+
+        // Batch-check like status
+        List<DocumentReference> likeRefs = new ArrayList<>();
+        for (RecipeResponse r : recipes) {
+          likeRefs.add(firestore
+              .collection(likesCollection)
+              .document(r.getId())
+              .collection("users")
+              .document(userId));
+        }
+        List<DocumentSnapshot> likeDocs = firestore
+            .getAll(likeRefs.toArray(new DocumentReference[0]))
+            .get();
+        for (int i = 0; i < likeDocs.size(); i++) {
+          recipes.get(i).setLikedByCurrentUser(likeDocs.get(i).exists());
         }
       }
 
@@ -458,6 +480,7 @@ public class RecipeService {
       querySnapshot.getDocuments().forEach(doc -> {
         Recipe recipe = doc.toObject(Recipe.class);
         RecipeResponse response = mapToResponse(recipe);
+        response.setLikeCount(extractLikeCount(doc));
         String uid = recipe.getUserId();
         if (uid != null) {
           if (!displayNameCache.containsKey(uid)) {
@@ -526,6 +549,7 @@ public class RecipeService {
     List<List<String>> batches = partitionList(followingIds, 30);
     try {
       List<Recipe> allRecipes = new ArrayList<>();
+      Map<String, Long> likeCountByRecipeId = new HashMap<>();
       for (List<String> batch : batches) {
         Query query = firestore.collection(recipesCollection)
             .whereIn("userId", batch)
@@ -537,7 +561,13 @@ public class RecipeService {
         // Fetch size+1 items per batch so we can detect whether a next page exists after merging.
         query = query.limit(size + 1);
         query.get().get().getDocuments()
-            .forEach(doc -> allRecipes.add(doc.toObject(Recipe.class)));
+            .forEach(doc -> {
+              allRecipes.add(doc.toObject(Recipe.class));
+              Long likeCount = doc.getLong("likeCount");
+              if (likeCount != null) {
+                likeCountByRecipeId.put(doc.getId(), likeCount);
+              }
+            });
       }
 
       allRecipes.sort((a, b) -> {
@@ -558,6 +588,8 @@ public class RecipeService {
       Map<String, String> displayNameCache = new HashMap<>();
       for (Recipe recipe : page) {
         RecipeResponse response = mapToResponse(recipe);
+        response.setLikeCount(
+            likeCountByRecipeId.getOrDefault(recipe.getId(), 0L).intValue());
         String uid = recipe.getUserId();
         if (uid != null) {
           if (!displayNameCache.containsKey(uid)) {
@@ -566,6 +598,24 @@ public class RecipeService {
           response.setAuthorDisplayName(displayNameCache.get(uid));
         }
         recipes.add(response);
+      }
+
+      // Batch-check like status for all feed recipes
+      if (!recipes.isEmpty()) {
+        List<DocumentReference> likeRefs = new ArrayList<>();
+        for (RecipeResponse r : recipes) {
+          likeRefs.add(firestore
+              .collection(likesCollection)
+              .document(r.getId())
+              .collection("users")
+              .document(userId));
+        }
+        List<DocumentSnapshot> likeDocs = firestore
+            .getAll(likeRefs.toArray(new DocumentReference[0]))
+            .get();
+        for (int i = 0; i < likeDocs.size(); i++) {
+          recipes.get(i).setLikedByCurrentUser(likeDocs.get(i).exists());
+        }
       }
 
       String nextPageToken = null;
@@ -715,6 +765,7 @@ public class RecipeService {
       log.info("Retrieved public recipe {}", recipeId);
       RecipeResponse response = mapToResponse(recipe);
       response.setAuthorDisplayName(resolveDisplayName(recipe.getUserId()));
+      response.setLikeCount(extractLikeCount(document));
       return response;
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
@@ -768,6 +819,8 @@ public class RecipeService {
       log.info("Retrieved recipe {} for user {}", recipeId, userId);
       RecipeResponse response = mapToResponse(recipe);
       response.setSavedByCurrentUser(isRecipeSavedByUser(recipeId, userId));
+      response.setLikeCount(extractLikeCount(document));
+      response.setLikedByCurrentUser(isRecipeLikedByUser(recipeId, userId));
       return response;
     } catch (InterruptedException | ExecutionException e) {
       log.error("Error fetching recipe from Firestore", e);
@@ -986,6 +1039,104 @@ public class RecipeService {
   }
 
   /**
+   * Like a recipe for a user. Idempotent – calling this multiple times has no additional effect.
+   * Atomically creates a like document and increments the {@code likeCount} on the recipe.
+   *
+   * @param recipeId The recipe ID to like
+   * @param userId   The Firebase user ID
+   * @throws ResponseStatusException 404 if the recipe does not exist,
+   *                                 503 if Firestore is unavailable
+   */
+  public void likeRecipe(String recipeId, String userId) {
+    if (firestore == null) {
+      log.warn("Firestore not configured - cannot like recipe");
+      throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Database not configured");
+    }
+
+    try {
+      DocumentReference recipeDocRef = firestore.collection(recipesCollection).document(recipeId);
+      DocumentSnapshot recipeDoc = recipeDocRef.get().get();
+
+      if (!recipeDoc.exists()) {
+        log.warn("Attempt to like non-existent recipe {}", recipeId);
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Recipe not found");
+      }
+
+      DocumentReference likeDocRef = firestore
+          .collection(likesCollection)
+          .document(recipeId)
+          .collection("users")
+          .document(userId);
+
+      firestore.runTransaction(transaction -> {
+        DocumentSnapshot existingLike = transaction.get(likeDocRef).get();
+        if (!existingLike.exists()) {
+          transaction.set(likeDocRef,
+              java.util.Map.of("likedAt", FieldValue.serverTimestamp()));
+          transaction.update(recipeDocRef, "likeCount", FieldValue.increment(1));
+        }
+        return null;
+      }).get();
+
+      log.info("Recipe {} liked by user {}", recipeId, userId);
+    } catch (ResponseStatusException e) {
+      throw e;
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      log.error("Error liking recipe {} for user {}", recipeId, userId, e);
+      throw new RuntimeException("Failed to like recipe", e);
+    } catch (ExecutionException e) {
+      if (e.getCause() instanceof ResponseStatusException rse) {
+        throw rse;
+      }
+      log.error("Error liking recipe {} for user {}", recipeId, userId, e);
+      throw new RuntimeException("Failed to like recipe", e);
+    }
+  }
+
+  /**
+   * Unlike a recipe for a user. Idempotent – calling this when the recipe is not liked is a no-op.
+   * Atomically removes the like document and decrements the {@code likeCount} on the recipe.
+   *
+   * @param recipeId The recipe ID to unlike
+   * @param userId   The Firebase user ID
+   * @throws ResponseStatusException 503 if Firestore is unavailable
+   */
+  public void unlikeRecipe(String recipeId, String userId) {
+    if (firestore == null) {
+      log.warn("Firestore not configured - cannot unlike recipe");
+      throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Database not configured");
+    }
+
+    try {
+      DocumentReference recipeDocRef = firestore.collection(recipesCollection).document(recipeId);
+      DocumentReference likeDocRef = firestore
+          .collection(likesCollection)
+          .document(recipeId)
+          .collection("users")
+          .document(userId);
+
+      firestore.runTransaction(transaction -> {
+        DocumentSnapshot existingLike = transaction.get(likeDocRef).get();
+        if (existingLike.exists()) {
+          transaction.delete(likeDocRef);
+          transaction.update(recipeDocRef, "likeCount", FieldValue.increment(-1));
+        }
+        return null;
+      }).get();
+
+      log.info("Recipe {} unliked by user {}", recipeId, userId);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      log.error("Error unliking recipe {} for user {}", recipeId, userId, e);
+      throw new RuntimeException("Failed to unlike recipe", e);
+    } catch (ExecutionException e) {
+      log.error("Error unliking recipe {} for user {}", recipeId, userId, e);
+      throw new RuntimeException("Failed to unlike recipe", e);
+    }
+  }
+
+  /**
    * Get the paginated list of recipes saved (bookmarked) by a user,
    * ordered by save date (newest first).
    *
@@ -1055,8 +1206,27 @@ public class RecipeService {
                 && (recipe.isPublicRecipe() || userId.equals(recipe.getUserId()))) {
               RecipeResponse response = mapToResponse(recipe);
               response.setSavedByCurrentUser(true);
+              response.setLikeCount(extractLikeCount(recipeDoc));
               recipes.add(response);
             }
+          }
+        }
+
+        // Batch-check like status for all saved recipes
+        if (!recipes.isEmpty()) {
+          List<DocumentReference> likeRefs = new ArrayList<>();
+          for (RecipeResponse r : recipes) {
+            likeRefs.add(firestore
+                .collection(likesCollection)
+                .document(r.getId())
+                .collection("users")
+                .document(userId));
+          }
+          List<DocumentSnapshot> likeDocs = firestore
+              .getAll(likeRefs.toArray(new DocumentReference[0]))
+              .get();
+          for (int i = 0; i < likeDocs.size(); i++) {
+            recipes.get(i).setLikedByCurrentUser(likeDocs.get(i).exists());
           }
         }
       }
@@ -1078,6 +1248,49 @@ public class RecipeService {
       log.error("Error fetching saved recipes for user {}", userId, e);
       throw new RuntimeException("Failed to fetch saved recipes", e);
     }
+  }
+
+  /**
+   * Check whether a specific recipe is liked by a user.
+   *
+   * @param recipeId The recipe ID
+   * @param userId   The Firebase user ID
+   * @return {@code true} if the recipe is liked, {@code false} otherwise
+   *         (including when Firestore is unavailable)
+   */
+  private boolean isRecipeLikedByUser(String recipeId, String userId) {
+    if (firestore == null) {
+      return false;
+    }
+    try {
+      DocumentSnapshot doc = firestore
+          .collection(likesCollection)
+          .document(recipeId)
+          .collection("users")
+          .document(userId)
+          .get().get();
+      return doc.exists();
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      log.warn("Interrupted while checking like status for recipe {} user {}: {}",
+          recipeId, userId, e.getMessage());
+      return false;
+    } catch (ExecutionException e) {
+      log.warn("Failed to check like status for recipe {} user {}: {}",
+          recipeId, userId, e.getMessage());
+      return false;
+    }
+  }
+
+  /**
+   * Extract the like count from a Firestore document snapshot.
+   *
+   * @param doc The Firestore document snapshot
+   * @return The like count, or 0 if not present
+   */
+  private int extractLikeCount(DocumentSnapshot doc) {
+    Long count = doc.getLong("likeCount");
+    return count != null ? count.intValue() : 0;
   }
 
   /**

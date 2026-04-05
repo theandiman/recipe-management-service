@@ -11,6 +11,7 @@ import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.Query;
 import com.google.cloud.firestore.QueryDocumentSnapshot;
 import com.google.cloud.firestore.QuerySnapshot;
+import com.google.cloud.firestore.Transaction;
 import com.google.cloud.firestore.WriteResult;
 import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.auth.FirebaseAuthException;
@@ -68,6 +69,7 @@ class RecipeServiceTest {
         ReflectionTestUtils.setField(recipeService, "firestore", firestore);
         ReflectionTestUtils.setField(recipeService, "recipesCollection", "recipes");
         ReflectionTestUtils.setField(recipeService, "savedRecipesCollection", "savedRecipes");
+        ReflectionTestUtils.setField(recipeService, "likesCollection", "likes");
         ReflectionTestUtils.setField(recipeService, "firebaseAuth", firebaseAuth);
         ReflectionTestUtils.setField(recipeService, "followService", followService);
     }
@@ -822,14 +824,33 @@ class RecipeServiceTest {
         when(savedUserDocRef.collection("recipes")).thenReturn(savedSubRef);
         when(savedSubRef.document(recipeId)).thenReturn(savedDocRef);
 
+        // Mock likes batch-get
+        CollectionReference likesTopRef = mock(CollectionReference.class);
+        DocumentReference likesRecipeDocRef = mock(DocumentReference.class);
+        CollectionReference likesSubRef = mock(CollectionReference.class);
+        DocumentReference likesUserDocRef = mock(DocumentReference.class);
+        when(firestore.collection("likes")).thenReturn(likesTopRef);
+        when(likesTopRef.document(recipeId)).thenReturn(likesRecipeDocRef);
+        when(likesRecipeDocRef.collection("users")).thenReturn(likesSubRef);
+        when(likesSubRef.document(userId)).thenReturn(likesUserDocRef);
+
         com.google.cloud.firestore.DocumentSnapshot bookmarkSnap =
                 mock(com.google.cloud.firestore.DocumentSnapshot.class);
         when(bookmarkSnap.exists()).thenReturn(true);
+        com.google.cloud.firestore.DocumentSnapshot likeSnap =
+                mock(com.google.cloud.firestore.DocumentSnapshot.class);
+        when(likeSnap.exists()).thenReturn(false);
         @SuppressWarnings("unchecked")
-        ApiFuture<List<com.google.cloud.firestore.DocumentSnapshot>> getAllFuture =
+        ApiFuture<List<com.google.cloud.firestore.DocumentSnapshot>> getAllFuture1 =
                 mock(ApiFuture.class);
-        when(getAllFuture.get()).thenReturn(List.of(bookmarkSnap));
-        when(firestore.getAll(any(DocumentReference[].class))).thenReturn(getAllFuture);
+        @SuppressWarnings("unchecked")
+        ApiFuture<List<com.google.cloud.firestore.DocumentSnapshot>> getAllFuture2 =
+                mock(ApiFuture.class);
+        when(getAllFuture1.get()).thenReturn(List.of(bookmarkSnap));
+        when(getAllFuture2.get()).thenReturn(List.of(likeSnap));
+        when(firestore.getAll(any(DocumentReference[].class)))
+                .thenReturn(getAllFuture1)
+                .thenReturn(getAllFuture2);
 
         // Act
         List<RecipeResponse> recipes = recipeService.getUserRecipes(userId);
@@ -1016,6 +1037,348 @@ class RecipeServiceTest {
         assertEquals(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE, ex.getStatusCode());
     }
 
+    // ── likeRecipe ───────────────────────────────────────────────────────────
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void likeRecipe_Success_NewLike() throws Exception {
+        String recipeId = "recipe123";
+        String userId = "user123";
+
+        // Recipe existence check
+        CollectionReference recipesRef = mock(CollectionReference.class);
+        when(firestore.collection("recipes")).thenReturn(recipesRef);
+        when(recipesRef.document(recipeId)).thenReturn(documentReference);
+        ApiFuture<DocumentSnapshot> snapFuture = mock(ApiFuture.class);
+        DocumentSnapshot snapDoc = mock(DocumentSnapshot.class);
+        when(documentReference.get()).thenReturn(snapFuture);
+        when(snapFuture.get()).thenReturn(snapDoc);
+        when(snapDoc.exists()).thenReturn(true);
+
+        // Likes doc ref chain
+        CollectionReference likesTopRef = mock(CollectionReference.class);
+        DocumentReference likesRecipeDocRef = mock(DocumentReference.class);
+        CollectionReference likesSubRef = mock(CollectionReference.class);
+        DocumentReference likesUserDocRef = mock(DocumentReference.class);
+        when(firestore.collection("likes")).thenReturn(likesTopRef);
+        when(likesTopRef.document(recipeId)).thenReturn(likesRecipeDocRef);
+        when(likesRecipeDocRef.collection("users")).thenReturn(likesSubRef);
+        when(likesSubRef.document(userId)).thenReturn(likesUserDocRef);
+
+        // Transaction mock: execute the lambda and verify like doc doesn't yet exist
+        Transaction mockTx = mock(Transaction.class);
+        ApiFuture<DocumentSnapshot> likeSnapFuture = mock(ApiFuture.class);
+        DocumentSnapshot likeSnap = mock(DocumentSnapshot.class);
+        when(likeSnap.exists()).thenReturn(false); // not yet liked
+        when(mockTx.get(likesUserDocRef)).thenReturn(likeSnapFuture);
+        when(likeSnapFuture.get()).thenReturn(likeSnap);
+        when(mockTx.set(any(), any())).thenReturn(mockTx);
+
+        ApiFuture<Object> txResult = mock(ApiFuture.class);
+        when(txResult.get()).thenReturn(null);
+        when(firestore.runTransaction(any(Transaction.Function.class))).thenAnswer(invocation -> {
+            Transaction.Function<?> fn = invocation.getArgument(0);
+            fn.updateCallback(mockTx);
+            return txResult;
+        });
+
+        recipeService.likeRecipe(recipeId, userId);
+
+        verify(mockTx).set(eq(likesUserDocRef), any());
+        verify(mockTx).update(eq(documentReference), eq("likeCount"), any());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void likeRecipe_Idempotent_WhenAlreadyLiked() throws Exception {
+        String recipeId = "recipe123";
+        String userId = "user123";
+
+        CollectionReference recipesRef = mock(CollectionReference.class);
+        when(firestore.collection("recipes")).thenReturn(recipesRef);
+        when(recipesRef.document(recipeId)).thenReturn(documentReference);
+        ApiFuture<DocumentSnapshot> snapFuture = mock(ApiFuture.class);
+        DocumentSnapshot snapDoc = mock(DocumentSnapshot.class);
+        when(documentReference.get()).thenReturn(snapFuture);
+        when(snapFuture.get()).thenReturn(snapDoc);
+        when(snapDoc.exists()).thenReturn(true);
+
+        CollectionReference likesTopRef = mock(CollectionReference.class);
+        DocumentReference likesRecipeDocRef = mock(DocumentReference.class);
+        CollectionReference likesSubRef = mock(CollectionReference.class);
+        DocumentReference likesUserDocRef = mock(DocumentReference.class);
+        when(firestore.collection("likes")).thenReturn(likesTopRef);
+        when(likesTopRef.document(recipeId)).thenReturn(likesRecipeDocRef);
+        when(likesRecipeDocRef.collection("users")).thenReturn(likesSubRef);
+        when(likesSubRef.document(userId)).thenReturn(likesUserDocRef);
+
+        // Like doc already exists - idempotent, no write should occur
+        Transaction mockTx = mock(Transaction.class);
+        ApiFuture<DocumentSnapshot> likeSnapFuture = mock(ApiFuture.class);
+        DocumentSnapshot likeSnap = mock(DocumentSnapshot.class);
+        when(likeSnap.exists()).thenReturn(true); // already liked
+        when(mockTx.get(likesUserDocRef)).thenReturn(likeSnapFuture);
+        when(likeSnapFuture.get()).thenReturn(likeSnap);
+
+        ApiFuture<Object> txResult = mock(ApiFuture.class);
+        when(txResult.get()).thenReturn(null);
+        when(firestore.runTransaction(any(Transaction.Function.class))).thenAnswer(invocation -> {
+            Transaction.Function<?> fn = invocation.getArgument(0);
+            fn.updateCallback(mockTx);
+            return txResult;
+        });
+
+        recipeService.likeRecipe(recipeId, userId);
+
+        verify(mockTx, never()).set(any(), any());
+        verify(mockTx, never()).update(any(), anyString(), any());
+    }
+
+    @Test
+    void likeRecipe_RecipeNotFound_ThrowsNotFoundException()
+            throws ExecutionException, InterruptedException {
+        String recipeId = "nonexistent";
+        String userId = "user123";
+
+        CollectionReference recipesRef = mock(CollectionReference.class);
+        when(firestore.collection("recipes")).thenReturn(recipesRef);
+        when(recipesRef.document(recipeId)).thenReturn(documentReference);
+
+        @SuppressWarnings("unchecked")
+        ApiFuture<com.google.cloud.firestore.DocumentSnapshot> snapFuture = mock(ApiFuture.class);
+        com.google.cloud.firestore.DocumentSnapshot snapDoc =
+                mock(com.google.cloud.firestore.DocumentSnapshot.class);
+        when(documentReference.get()).thenReturn(snapFuture);
+        when(snapFuture.get()).thenReturn(snapDoc);
+        when(snapDoc.exists()).thenReturn(false);
+
+        org.springframework.web.server.ResponseStatusException ex = assertThrows(
+                org.springframework.web.server.ResponseStatusException.class,
+                () -> recipeService.likeRecipe(recipeId, userId));
+        assertEquals(org.springframework.http.HttpStatus.NOT_FOUND, ex.getStatusCode());
+        verify(firestore, never()).runTransaction(any());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void likeRecipe_InterruptedException_ThrowsRuntimeException() throws Exception {
+        String recipeId = "recipe123";
+        String userId = "user123";
+
+        CollectionReference recipesRef = mock(CollectionReference.class);
+        when(firestore.collection("recipes")).thenReturn(recipesRef);
+        when(recipesRef.document(recipeId)).thenReturn(documentReference);
+        ApiFuture<DocumentSnapshot> snapFuture = mock(ApiFuture.class);
+        DocumentSnapshot snapDoc = mock(DocumentSnapshot.class);
+        when(documentReference.get()).thenReturn(snapFuture);
+        when(snapFuture.get()).thenReturn(snapDoc);
+        when(snapDoc.exists()).thenReturn(true);
+
+        CollectionReference likesTopRef = mock(CollectionReference.class);
+        DocumentReference likesRecipeDocRef = mock(DocumentReference.class);
+        CollectionReference likesSubRef = mock(CollectionReference.class);
+        DocumentReference likesUserDocRef = mock(DocumentReference.class);
+        when(firestore.collection("likes")).thenReturn(likesTopRef);
+        when(likesTopRef.document(recipeId)).thenReturn(likesRecipeDocRef);
+        when(likesRecipeDocRef.collection("users")).thenReturn(likesSubRef);
+        when(likesSubRef.document(userId)).thenReturn(likesUserDocRef);
+
+        ApiFuture<Object> txResult = mock(ApiFuture.class);
+        when(firestore.runTransaction(any(Transaction.Function.class))).thenReturn(txResult);
+        when(txResult.get()).thenThrow(new InterruptedException("interrupted"));
+
+        assertThrows(RuntimeException.class, () -> recipeService.likeRecipe(recipeId, userId));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void likeRecipe_ExecutionException_ThrowsRuntimeException() throws Exception {
+        String recipeId = "recipe123";
+        String userId = "user123";
+
+        CollectionReference recipesRef = mock(CollectionReference.class);
+        when(firestore.collection("recipes")).thenReturn(recipesRef);
+        when(recipesRef.document(recipeId)).thenReturn(documentReference);
+        ApiFuture<DocumentSnapshot> snapFuture = mock(ApiFuture.class);
+        DocumentSnapshot snapDoc = mock(DocumentSnapshot.class);
+        when(documentReference.get()).thenReturn(snapFuture);
+        when(snapFuture.get()).thenReturn(snapDoc);
+        when(snapDoc.exists()).thenReturn(true);
+
+        CollectionReference likesTopRef = mock(CollectionReference.class);
+        DocumentReference likesRecipeDocRef = mock(DocumentReference.class);
+        CollectionReference likesSubRef = mock(CollectionReference.class);
+        DocumentReference likesUserDocRef = mock(DocumentReference.class);
+        when(firestore.collection("likes")).thenReturn(likesTopRef);
+        when(likesTopRef.document(recipeId)).thenReturn(likesRecipeDocRef);
+        when(likesRecipeDocRef.collection("users")).thenReturn(likesSubRef);
+        when(likesSubRef.document(userId)).thenReturn(likesUserDocRef);
+
+        ApiFuture<Object> txResult = mock(ApiFuture.class);
+        when(firestore.runTransaction(any(Transaction.Function.class))).thenReturn(txResult);
+        when(txResult.get()).thenThrow(new ExecutionException("error", new RuntimeException("cause")));
+
+        assertThrows(RuntimeException.class, () -> recipeService.likeRecipe(recipeId, userId));
+    }
+
+    @Test
+    void likeRecipe_FirestoreNotConfigured_ThrowsServiceUnavailable() {
+        RecipeService svc = new RecipeService();
+        ReflectionTestUtils.setField(svc, "recipesCollection", "recipes");
+        ReflectionTestUtils.setField(svc, "likesCollection", "likes");
+
+        org.springframework.web.server.ResponseStatusException ex = assertThrows(
+                org.springframework.web.server.ResponseStatusException.class,
+                () -> svc.likeRecipe("recipe123", "user123"));
+        assertEquals(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE, ex.getStatusCode());
+    }
+
+    // ── unlikeRecipe ─────────────────────────────────────────────────────────
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void unlikeRecipe_Success_WhenLiked() throws Exception {
+        String recipeId = "recipe123";
+        String userId = "user123";
+
+        CollectionReference recipesRef = mock(CollectionReference.class);
+        when(firestore.collection("recipes")).thenReturn(recipesRef);
+        when(recipesRef.document(recipeId)).thenReturn(documentReference);
+
+        CollectionReference likesTopRef = mock(CollectionReference.class);
+        DocumentReference likesRecipeDocRef = mock(DocumentReference.class);
+        CollectionReference likesSubRef = mock(CollectionReference.class);
+        DocumentReference likesUserDocRef = mock(DocumentReference.class);
+        when(firestore.collection("likes")).thenReturn(likesTopRef);
+        when(likesTopRef.document(recipeId)).thenReturn(likesRecipeDocRef);
+        when(likesRecipeDocRef.collection("users")).thenReturn(likesSubRef);
+        when(likesSubRef.document(userId)).thenReturn(likesUserDocRef);
+
+        Transaction mockTx = mock(Transaction.class);
+        ApiFuture<DocumentSnapshot> likeSnapFuture = mock(ApiFuture.class);
+        DocumentSnapshot likeSnap = mock(DocumentSnapshot.class);
+        when(likeSnap.exists()).thenReturn(true); // IS liked - should delete
+        when(mockTx.get(likesUserDocRef)).thenReturn(likeSnapFuture);
+        when(likeSnapFuture.get()).thenReturn(likeSnap);
+
+        ApiFuture<Object> txResult = mock(ApiFuture.class);
+        when(txResult.get()).thenReturn(null);
+        when(firestore.runTransaction(any(Transaction.Function.class))).thenAnswer(invocation -> {
+            Transaction.Function<?> fn = invocation.getArgument(0);
+            fn.updateCallback(mockTx);
+            return txResult;
+        });
+
+        recipeService.unlikeRecipe(recipeId, userId);
+
+        verify(mockTx).delete(likesUserDocRef);
+        verify(mockTx).update(eq(documentReference), eq("likeCount"), any());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void unlikeRecipe_Idempotent_WhenNotLiked() throws Exception {
+        String recipeId = "recipe123";
+        String userId = "user123";
+
+        CollectionReference recipesRef = mock(CollectionReference.class);
+        when(firestore.collection("recipes")).thenReturn(recipesRef);
+        when(recipesRef.document(recipeId)).thenReturn(documentReference);
+
+        CollectionReference likesTopRef = mock(CollectionReference.class);
+        DocumentReference likesRecipeDocRef = mock(DocumentReference.class);
+        CollectionReference likesSubRef = mock(CollectionReference.class);
+        DocumentReference likesUserDocRef = mock(DocumentReference.class);
+        when(firestore.collection("likes")).thenReturn(likesTopRef);
+        when(likesTopRef.document(recipeId)).thenReturn(likesRecipeDocRef);
+        when(likesRecipeDocRef.collection("users")).thenReturn(likesSubRef);
+        when(likesSubRef.document(userId)).thenReturn(likesUserDocRef);
+
+        Transaction mockTx = mock(Transaction.class);
+        ApiFuture<DocumentSnapshot> likeSnapFuture = mock(ApiFuture.class);
+        DocumentSnapshot likeSnap = mock(DocumentSnapshot.class);
+        when(likeSnap.exists()).thenReturn(false); // NOT liked - no-op
+        when(mockTx.get(likesUserDocRef)).thenReturn(likeSnapFuture);
+        when(likeSnapFuture.get()).thenReturn(likeSnap);
+
+        ApiFuture<Object> txResult = mock(ApiFuture.class);
+        when(txResult.get()).thenReturn(null);
+        when(firestore.runTransaction(any(Transaction.Function.class))).thenAnswer(invocation -> {
+            Transaction.Function<?> fn = invocation.getArgument(0);
+            fn.updateCallback(mockTx);
+            return txResult;
+        });
+
+        recipeService.unlikeRecipe(recipeId, userId);
+
+        verify(mockTx, never()).delete(any());
+        verify(mockTx, never()).update(any(), anyString(), any());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void unlikeRecipe_InterruptedException_ThrowsRuntimeException() throws Exception {
+        String recipeId = "recipe123";
+        String userId = "user123";
+
+        CollectionReference recipesRef = mock(CollectionReference.class);
+        when(firestore.collection("recipes")).thenReturn(recipesRef);
+        when(recipesRef.document(recipeId)).thenReturn(documentReference);
+
+        CollectionReference likesTopRef = mock(CollectionReference.class);
+        DocumentReference likesRecipeDocRef = mock(DocumentReference.class);
+        CollectionReference likesSubRef = mock(CollectionReference.class);
+        DocumentReference likesUserDocRef = mock(DocumentReference.class);
+        when(firestore.collection("likes")).thenReturn(likesTopRef);
+        when(likesTopRef.document(recipeId)).thenReturn(likesRecipeDocRef);
+        when(likesRecipeDocRef.collection("users")).thenReturn(likesSubRef);
+        when(likesSubRef.document(userId)).thenReturn(likesUserDocRef);
+
+        ApiFuture<Object> txResult = mock(ApiFuture.class);
+        when(firestore.runTransaction(any(Transaction.Function.class))).thenReturn(txResult);
+        when(txResult.get()).thenThrow(new InterruptedException("interrupted"));
+
+        assertThrows(RuntimeException.class, () -> recipeService.unlikeRecipe(recipeId, userId));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void unlikeRecipe_ExecutionException_ThrowsRuntimeException() throws Exception {
+        String recipeId = "recipe123";
+        String userId = "user123";
+
+        CollectionReference recipesRef = mock(CollectionReference.class);
+        when(firestore.collection("recipes")).thenReturn(recipesRef);
+        when(recipesRef.document(recipeId)).thenReturn(documentReference);
+
+        CollectionReference likesTopRef = mock(CollectionReference.class);
+        DocumentReference likesRecipeDocRef = mock(DocumentReference.class);
+        CollectionReference likesSubRef = mock(CollectionReference.class);
+        DocumentReference likesUserDocRef = mock(DocumentReference.class);
+        when(firestore.collection("likes")).thenReturn(likesTopRef);
+        when(likesTopRef.document(recipeId)).thenReturn(likesRecipeDocRef);
+        when(likesRecipeDocRef.collection("users")).thenReturn(likesSubRef);
+        when(likesSubRef.document(userId)).thenReturn(likesUserDocRef);
+
+        ApiFuture<Object> txResult = mock(ApiFuture.class);
+        when(firestore.runTransaction(any(Transaction.Function.class))).thenReturn(txResult);
+        when(txResult.get()).thenThrow(new ExecutionException("error", new RuntimeException("cause")));
+
+        assertThrows(RuntimeException.class, () -> recipeService.unlikeRecipe(recipeId, userId));
+    }
+
+    @Test
+    void unlikeRecipe_FirestoreNotConfigured_ThrowsServiceUnavailable() {
+        RecipeService svc = new RecipeService();
+        ReflectionTestUtils.setField(svc, "recipesCollection", "recipes");
+        ReflectionTestUtils.setField(svc, "likesCollection", "likes");
+
+        org.springframework.web.server.ResponseStatusException ex = assertThrows(
+                org.springframework.web.server.ResponseStatusException.class,
+                () -> svc.unlikeRecipe("recipe123", "user123"));
+        assertEquals(org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE, ex.getStatusCode());
+    }
+
     // ── getSavedRecipes ──────────────────────────────────────────────────────
 
     @Test
@@ -1126,11 +1489,32 @@ class RecipeServiceTest {
                 .id(recipeId).userId(userId).recipeName("Pasta").publicRecipe(false)
                 .createdAt(Instant.now()).updatedAt(Instant.now()).build();
         when(rSnap.toObject(Recipe.class)).thenReturn(recipe);
+
+        // Mock likes collection for batch like check
+        CollectionReference likesTopRef = mock(CollectionReference.class);
+        DocumentReference likesRecipeDocRef = mock(DocumentReference.class);
+        CollectionReference likesSubRef = mock(CollectionReference.class);
+        DocumentReference likesUserDocRef = mock(DocumentReference.class);
+        when(firestore.collection("likes")).thenReturn(likesTopRef);
+        when(likesTopRef.document(recipeId)).thenReturn(likesRecipeDocRef);
+        when(likesRecipeDocRef.collection("users")).thenReturn(likesSubRef);
+        when(likesSubRef.document(userId)).thenReturn(likesUserDocRef);
+
+        com.google.cloud.firestore.DocumentSnapshot likeSnap =
+                mock(com.google.cloud.firestore.DocumentSnapshot.class);
+        when(likeSnap.exists()).thenReturn(false);
+
         @SuppressWarnings("unchecked")
-        ApiFuture<List<com.google.cloud.firestore.DocumentSnapshot>> getAllFuture =
+        ApiFuture<List<com.google.cloud.firestore.DocumentSnapshot>> getAllFuture1 =
                 mock(ApiFuture.class);
-        when(getAllFuture.get()).thenReturn(List.of(rSnap));
-        when(firestore.getAll(any(DocumentReference[].class))).thenReturn(getAllFuture);
+        @SuppressWarnings("unchecked")
+        ApiFuture<List<com.google.cloud.firestore.DocumentSnapshot>> getAllFuture2 =
+                mock(ApiFuture.class);
+        when(getAllFuture1.get()).thenReturn(List.of(rSnap));
+        when(getAllFuture2.get()).thenReturn(List.of(likeSnap));
+        when(firestore.getAll(any(DocumentReference[].class)))
+                .thenReturn(getAllFuture1)
+                .thenReturn(getAllFuture2);
 
         // Act
         PagedRecipeResponse response = recipeService.getSavedRecipes(userId, null, 20);
@@ -1185,6 +1569,24 @@ class RecipeServiceTest {
         when(savedRecipeDocRef.get()).thenReturn(savedFuture);
         when(savedFuture.get()).thenReturn(savedSnap);
         when(savedSnap.exists()).thenReturn(true);  // recipe IS saved
+
+        // like-status check
+        CollectionReference likesTopRef = mock(CollectionReference.class);
+        DocumentReference likesRecipeDocRef = mock(DocumentReference.class);
+        CollectionReference likesSubRef = mock(CollectionReference.class);
+        DocumentReference likesUserDocRef = mock(DocumentReference.class);
+        when(firestore.collection("likes")).thenReturn(likesTopRef);
+        when(likesTopRef.document(recipeId)).thenReturn(likesRecipeDocRef);
+        when(likesRecipeDocRef.collection("users")).thenReturn(likesSubRef);
+        when(likesSubRef.document(userId)).thenReturn(likesUserDocRef);
+
+        @SuppressWarnings("unchecked")
+        ApiFuture<com.google.cloud.firestore.DocumentSnapshot> likeFuture = mock(ApiFuture.class);
+        com.google.cloud.firestore.DocumentSnapshot likeSnap =
+                mock(com.google.cloud.firestore.DocumentSnapshot.class);
+        when(likesUserDocRef.get()).thenReturn(likeFuture);
+        when(likeFuture.get()).thenReturn(likeSnap);
+        when(likeSnap.exists()).thenReturn(false);  // recipe is NOT liked
 
         // Act
         RecipeResponse response = recipeService.getRecipe(recipeId, userId);
@@ -1279,6 +1681,22 @@ class RecipeServiceTest {
         when(docSnapshot.toObject(Recipe.class)).thenReturn(recipe);
         when(querySnapshot.getDocuments()).thenReturn(List.of(docSnapshot));
 
+        // Mock likes collection for batch like check
+        CollectionReference likesTopRef = mock(CollectionReference.class);
+        DocumentReference likesRecipeDocRef = mock(DocumentReference.class);
+        CollectionReference likesSubRef = mock(CollectionReference.class);
+        DocumentReference likesUserDocRef = mock(DocumentReference.class);
+        when(firestore.collection("likes")).thenReturn(likesTopRef);
+        when(likesTopRef.document("r1")).thenReturn(likesRecipeDocRef);
+        when(likesRecipeDocRef.collection("users")).thenReturn(likesSubRef);
+        when(likesSubRef.document("user1")).thenReturn(likesUserDocRef);
+
+        DocumentSnapshot likeSnap = mock(DocumentSnapshot.class);
+        when(likeSnap.exists()).thenReturn(false);
+        ApiFuture<List<DocumentSnapshot>> getAllFuture = mock(ApiFuture.class);
+        when(getAllFuture.get()).thenReturn(List.of(likeSnap));
+        when(firestore.getAll(any(DocumentReference[].class))).thenReturn(getAllFuture);
+
         PagedRecipeResponse response = recipeService.getFeed("user1", null, 20);
 
         assertNotNull(response);
@@ -1325,6 +1743,30 @@ class RecipeServiceTest {
         when(doc2.toObject(Recipe.class)).thenReturn(r2);
         when(doc3.toObject(Recipe.class)).thenReturn(r3);
         when(querySnapshot.getDocuments()).thenReturn(List.of(doc1, doc2, doc3));
+
+        // Mock likes collection for batch like check (page is r1, r2)
+        CollectionReference likesTopRef = mock(CollectionReference.class);
+        when(firestore.collection("likes")).thenReturn(likesTopRef);
+        DocumentReference likesR1DocRef = mock(DocumentReference.class);
+        DocumentReference likesR2DocRef = mock(DocumentReference.class);
+        CollectionReference likesR1SubRef = mock(CollectionReference.class);
+        CollectionReference likesR2SubRef = mock(CollectionReference.class);
+        DocumentReference likesR1UserDocRef = mock(DocumentReference.class);
+        DocumentReference likesR2UserDocRef = mock(DocumentReference.class);
+        when(likesTopRef.document("r1")).thenReturn(likesR1DocRef);
+        when(likesTopRef.document("r2")).thenReturn(likesR2DocRef);
+        when(likesR1DocRef.collection("users")).thenReturn(likesR1SubRef);
+        when(likesR2DocRef.collection("users")).thenReturn(likesR2SubRef);
+        when(likesR1SubRef.document("user1")).thenReturn(likesR1UserDocRef);
+        when(likesR2SubRef.document("user1")).thenReturn(likesR2UserDocRef);
+
+        DocumentSnapshot likeSnap1 = mock(DocumentSnapshot.class);
+        DocumentSnapshot likeSnap2 = mock(DocumentSnapshot.class);
+        when(likeSnap1.exists()).thenReturn(false);
+        when(likeSnap2.exists()).thenReturn(false);
+        ApiFuture<List<DocumentSnapshot>> getAllFuture = mock(ApiFuture.class);
+        when(getAllFuture.get()).thenReturn(List.of(likeSnap1, likeSnap2));
+        when(firestore.getAll(any(DocumentReference[].class))).thenReturn(getAllFuture);
 
         PagedRecipeResponse response = recipeService.getFeed("user1", null, 2);
 
