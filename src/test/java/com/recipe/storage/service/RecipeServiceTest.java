@@ -785,6 +785,74 @@ class RecipeServiceTest {
                 .build();
     }
 
+    // ── totalTime computation ────────────────────────────────────────────────
+
+    @Test
+    void saveRecipe_ComputesTotalTime_WhenNotProvided() {
+        // prepTime=15, cookTime=30, no totalTime → expect totalTime=45
+        RecipeService serviceWithoutFirestore = new RecipeService();
+        ReflectionTestUtils.setField(serviceWithoutFirestore, "recipesCollection", "recipes");
+
+        CreateRecipeRequest request = CreateRecipeRequest.builder()
+                .title("Test Recipe")
+                .ingredients(List.of("ingredient"))
+                .instructions(List.of("step"))
+                .prepTime(15)
+                .cookTime(30)
+                .servings(2)
+                .source("ai-generated")
+                .build();
+
+        RecipeResponse response = serviceWithoutFirestore.saveRecipe(request, "user1");
+
+        assertNotNull(response);
+        assertEquals(45, response.getTotalTime());
+    }
+
+    @Test
+    void saveRecipe_PreservesCustomTotalTime_WhenProvided() {
+        // prepTime=15, cookTime=30, totalTime=60 (custom) → expect totalTime=60
+        RecipeService serviceWithoutFirestore = new RecipeService();
+        ReflectionTestUtils.setField(serviceWithoutFirestore, "recipesCollection", "recipes");
+
+        CreateRecipeRequest request = CreateRecipeRequest.builder()
+                .title("Test Recipe")
+                .ingredients(List.of("ingredient"))
+                .instructions(List.of("step"))
+                .prepTime(15)
+                .cookTime(30)
+                .totalTime(60)
+                .servings(2)
+                .source("ai-generated")
+                .build();
+
+        RecipeResponse response = serviceWithoutFirestore.saveRecipe(request, "user1");
+
+        assertNotNull(response);
+        assertEquals(60, response.getTotalTime());
+    }
+
+    @Test
+    void saveRecipe_TotalTimeIsNull_WhenOnlyPrepTimeProvided() {
+        // prepTime=10, no cookTime → expect totalTime=null
+        RecipeService serviceWithoutFirestore = new RecipeService();
+        ReflectionTestUtils.setField(serviceWithoutFirestore, "recipesCollection", "recipes");
+
+        CreateRecipeRequest request = CreateRecipeRequest.builder()
+                .title("Test Recipe")
+                .ingredients(List.of("ingredient"))
+                .instructions(List.of("step"))
+                .prepTime(10)
+                .servings(2)
+                .source("ai-generated")
+                .build();
+
+        RecipeResponse response = serviceWithoutFirestore.saveRecipe(request, "user1");
+
+        assertNotNull(response);
+        assertNull(response.getTotalTime());
+    }
+
     // ── getUserRecipes ───────────────────────────────────────────────────────
 
     @Test
