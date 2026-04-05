@@ -14,7 +14,7 @@
 
     <groupId>com.recipe</groupId>
     <artifactId>recipe-management-service</artifactId>
-    <version>0.0.40-SNAPSHOT</version>
+    <version>0.0.41-SNAPSHOT</version>
     <name>recipe-management-service</name>
     <description>Recipe management service using Spring Boot and Firestore</description>
 
