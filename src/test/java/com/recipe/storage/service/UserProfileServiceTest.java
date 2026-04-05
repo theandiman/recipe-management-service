@@ -8,6 +8,8 @@ import com.google.cloud.firestore.DocumentReference;
 import com.google.cloud.firestore.DocumentSnapshot;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.Query;
+import com.google.firebase.auth.FirebaseAuth;
+import com.google.firebase.auth.UserRecord;
 import com.recipe.storage.dto.UserProfileResponse;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,6 +39,12 @@ class UserProfileServiceTest {
 
     @Mock
     private FollowService followService;
+
+    @Mock
+    private FirebaseAuth firebaseAuth;
+
+    @Mock
+    private UserRecord userRecord;
 
     private UserProfileService userProfileService;
 
@@ -277,6 +285,59 @@ class UserProfileServiceTest {
                 ResponseStatusException.class,
                 () -> userProfileService.getUserProfile(uid, null));
         assertEquals(HttpStatus.NOT_FOUND, exception.getStatusCode());
+    }
+
+    @Test
+    void getUserProfile_UserMissingInFirestoreButPresentInFirebaseAuth_ReturnsFallbackProfile()
+            throws Exception {
+        // Arrange
+        String uid = "author-123";
+        ReflectionTestUtils.setField(userProfileService, "firebaseAuth", firebaseAuth);
+
+        CollectionReference usersCollection = mock(CollectionReference.class);
+        DocumentReference userDocRef = mock(DocumentReference.class);
+        @SuppressWarnings("unchecked")
+        ApiFuture<DocumentSnapshot> userFuture = mock(ApiFuture.class);
+        DocumentSnapshot userSnapshot = mock(DocumentSnapshot.class);
+
+        when(firestore.collection("users")).thenReturn(usersCollection);
+        when(usersCollection.document(uid)).thenReturn(userDocRef);
+        when(userDocRef.get()).thenReturn(userFuture);
+        when(userFuture.get()).thenReturn(userSnapshot);
+        when(userSnapshot.exists()).thenReturn(false);
+
+        CollectionReference recipesCollection = mock(CollectionReference.class);
+        Query uidQuery = mock(Query.class);
+        Query publicQuery = mock(Query.class);
+        AggregateQuery aggregateQuery = mock(AggregateQuery.class);
+        @SuppressWarnings("unchecked")
+        ApiFuture<AggregateQuerySnapshot> countFuture = mock(ApiFuture.class);
+        AggregateQuerySnapshot countSnapshot = mock(AggregateQuerySnapshot.class);
+
+        when(firestore.collection("recipes")).thenReturn(recipesCollection);
+        when(recipesCollection.whereEqualTo("userId", uid)).thenReturn(uidQuery);
+        when(uidQuery.whereEqualTo("isPublic", true)).thenReturn(publicQuery);
+        when(publicQuery.count()).thenReturn(aggregateQuery);
+        when(aggregateQuery.get()).thenReturn(countFuture);
+        when(countFuture.get()).thenReturn(countSnapshot);
+        when(countSnapshot.getCount()).thenReturn(4L);
+
+        when(firebaseAuth.getUser(uid)).thenReturn(userRecord);
+        when(userRecord.getDisplayName()).thenReturn("Chef Andy");
+        when(userRecord.getPhotoUrl()).thenReturn("https://example.com/chef-andy.png");
+
+        // Act
+        UserProfileResponse response = userProfileService.getUserProfile(uid, null);
+
+        // Assert
+        assertNotNull(response);
+        assertEquals(uid, response.getUid());
+        assertEquals("Chef Andy", response.getDisplayName());
+        assertEquals("https://example.com/chef-andy.png", response.getAvatarUrl());
+        assertEquals(4L, response.getPublicRecipeCount());
+        assertEquals(0L, response.getFollowerCount());
+        assertEquals(0L, response.getFollowingCount());
+        assertFalse(response.isFollowedByCurrentUser());
     }
 
     @Test
