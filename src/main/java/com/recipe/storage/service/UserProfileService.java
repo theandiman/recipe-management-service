@@ -1,14 +1,18 @@
 package com.recipe.storage.service;
 
 import com.google.api.core.ApiFuture;
-import com.google.cloud.firestore.AggregateQuerySnapshot;
 import com.google.cloud.firestore.DocumentReference;
 import com.google.cloud.firestore.DocumentSnapshot;
 import com.google.cloud.firestore.Firestore;
+import com.google.cloud.firestore.QuerySnapshot;
 import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.auth.FirebaseAuthException;
 import com.google.firebase.auth.UserRecord;
+import com.recipe.shared.model.Recipe;
+import com.recipe.storage.dto.RecipeResponse;
 import com.recipe.storage.dto.UserProfileResponse;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ExecutionException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -32,6 +36,9 @@ public class UserProfileService {
 
   @Autowired(required = false)
   private FirebaseAuth firebaseAuth;
+
+  @Autowired(required = false)
+  private RecipeService recipeService;
 
   @Value("${firestore.collection.users}")
   private String usersCollection;
@@ -106,7 +113,8 @@ public class UserProfileService {
       long followerCount = rawFollowerCount != null ? rawFollowerCount : 0L;
       long followingCount = rawFollowingCount != null ? rawFollowingCount : 0L;
 
-      long publicRecipeCount = countPublicRecipes(uid);
+      List<RecipeResponse> publicRecipes = fetchPublicRecipes(uid);
+      long publicRecipeCount = publicRecipes.size();
 
       boolean isFollowedByCurrentUser = currentUserId != null
           && followService != null
@@ -122,6 +130,7 @@ public class UserProfileService {
           .bio(bio)
           .avatarUrl(avatarUrl)
           .publicRecipeCount(publicRecipeCount)
+          .publicRecipes(publicRecipes)
           .followerCount(followerCount)
           .followingCount(followingCount)
           .isFollowedByCurrentUser(isFollowedByCurrentUser)
@@ -140,27 +149,36 @@ public class UserProfileService {
     }
   }
 
-  private long countPublicRecipes(String uid) {
+  private List<RecipeResponse> fetchPublicRecipes(String uid) {
+    if (recipeService == null) {
+      return new ArrayList<>();
+    }
     try {
-      ApiFuture<AggregateQuerySnapshot> countFuture = firestore.collection(recipesCollection)
+      ApiFuture<QuerySnapshot> future = firestore.collection(recipesCollection)
           .whereEqualTo("userId", uid)
           .whereEqualTo("isPublic", true)
-          .count()
           .get();
-      AggregateQuerySnapshot snapshot = countFuture.get();
-      return snapshot.getCount();
+      QuerySnapshot snapshot = future.get();
+      List<RecipeResponse> recipes = new ArrayList<>();
+      for (var doc : snapshot.getDocuments()) {
+        Recipe recipe = doc.toObject(Recipe.class);
+        if (recipe != null) {
+          recipes.add(recipeService.mapToResponse(recipe));
+        }
+      }
+      return recipes;
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
-      log.error("Interrupted while counting public recipes for user {}", uid, e);
+      log.error("Interrupted while fetching public recipes for user {}", uid, e);
       throw new ResponseStatusException(
           HttpStatus.SERVICE_UNAVAILABLE,
-          "Failed to count public recipes",
+          "Failed to fetch public recipes",
           e);
     } catch (ExecutionException e) {
-      log.error("Error counting public recipes for user {}", uid, e);
+      log.error("Error fetching public recipes for user {}", uid, e);
       throw new ResponseStatusException(
           HttpStatus.SERVICE_UNAVAILABLE,
-          "Failed to count public recipes",
+          "Failed to fetch public recipes",
           e);
     }
   }

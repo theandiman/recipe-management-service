@@ -1,15 +1,17 @@
 package com.recipe.storage.service;
 
 import com.google.api.core.ApiFuture;
-import com.google.cloud.firestore.AggregateQuery;
-import com.google.cloud.firestore.AggregateQuerySnapshot;
 import com.google.cloud.firestore.CollectionReference;
 import com.google.cloud.firestore.DocumentReference;
 import com.google.cloud.firestore.DocumentSnapshot;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.Query;
+import com.google.cloud.firestore.QueryDocumentSnapshot;
+import com.google.cloud.firestore.QuerySnapshot;
 import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.auth.UserRecord;
+import com.recipe.shared.model.Recipe;
+import com.recipe.storage.dto.RecipeResponse;
 import com.recipe.storage.dto.UserProfileResponse;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -20,6 +22,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.ExecutionException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -46,6 +50,9 @@ class UserProfileServiceTest {
     @Mock
     private UserRecord userRecord;
 
+    @Mock
+    private RecipeService recipeService;
+
     private UserProfileService userProfileService;
 
     @BeforeEach
@@ -53,8 +60,30 @@ class UserProfileServiceTest {
         userProfileService = new UserProfileService();
         ReflectionTestUtils.setField(userProfileService, "firestore", firestore);
         ReflectionTestUtils.setField(userProfileService, "followService", followService);
+        ReflectionTestUtils.setField(userProfileService, "recipeService", recipeService);
         ReflectionTestUtils.setField(userProfileService, "usersCollection", "users");
         ReflectionTestUtils.setField(userProfileService, "recipesCollection", "recipes");
+    }
+
+    /**
+     * Sets up Firestore query mocks for the recipes collection, returning a QuerySnapshot with the
+     * given list of documents.
+     */
+    private void mockPublicRecipesQuery(String uid, List<QueryDocumentSnapshot> docs)
+            throws ExecutionException, InterruptedException {
+        CollectionReference recipesCollection = mock(CollectionReference.class);
+        Query uidQuery = mock(Query.class);
+        Query publicQuery = mock(Query.class);
+        @SuppressWarnings("unchecked")
+        ApiFuture<QuerySnapshot> queryFuture = mock(ApiFuture.class);
+        QuerySnapshot querySnapshot = mock(QuerySnapshot.class);
+
+        when(firestore.collection("recipes")).thenReturn(recipesCollection);
+        when(recipesCollection.whereEqualTo("userId", uid)).thenReturn(uidQuery);
+        when(uidQuery.whereEqualTo("isPublic", true)).thenReturn(publicQuery);
+        when(publicQuery.get()).thenReturn(queryFuture);
+        when(queryFuture.get()).thenReturn(querySnapshot);
+        when(querySnapshot.getDocuments()).thenReturn(docs);
     }
 
     @Test
@@ -79,22 +108,17 @@ class UserProfileServiceTest {
         when(userSnapshot.getLong("followerCount")).thenReturn(42L);
         when(userSnapshot.getLong("followingCount")).thenReturn(17L);
 
-        // Mock recipe count
-        CollectionReference recipesCollection = mock(CollectionReference.class);
-        Query uidQuery = mock(Query.class);
-        Query publicQuery = mock(Query.class);
-        AggregateQuery aggregateQuery = mock(AggregateQuery.class);
-        @SuppressWarnings("unchecked")
-        ApiFuture<AggregateQuerySnapshot> countFuture = mock(ApiFuture.class);
-        AggregateQuerySnapshot countSnapshot = mock(AggregateQuerySnapshot.class);
-
-        when(firestore.collection("recipes")).thenReturn(recipesCollection);
-        when(recipesCollection.whereEqualTo("userId", uid)).thenReturn(uidQuery);
-        when(uidQuery.whereEqualTo("isPublic", true)).thenReturn(publicQuery);
-        when(publicQuery.count()).thenReturn(aggregateQuery);
-        when(aggregateQuery.get()).thenReturn(countFuture);
-        when(countFuture.get()).thenReturn(countSnapshot);
-        when(countSnapshot.getCount()).thenReturn(12L);
+        // Mock 12 public recipe docs
+        List<QueryDocumentSnapshot> recipeDocs = new java.util.ArrayList<>();
+        for (int i = 0; i < 12; i++) {
+            QueryDocumentSnapshot doc = mock(QueryDocumentSnapshot.class);
+            Recipe recipe = Recipe.builder().id("recipe-" + i).userId(uid).recipeName("Recipe " + i).publicRecipe(true).build();
+            when(doc.toObject(Recipe.class)).thenReturn(recipe);
+            RecipeResponse recipeResponse = RecipeResponse.builder().id("recipe-" + i).userId(uid).title("Recipe " + i).isPublic(true).build();
+            when(recipeService.mapToResponse(recipe)).thenReturn(recipeResponse);
+            recipeDocs.add(doc);
+        }
+        mockPublicRecipesQuery(uid, recipeDocs);
 
         // Act - unauthenticated caller
         UserProfileResponse response = userProfileService.getUserProfile(uid, null);
@@ -106,6 +130,8 @@ class UserProfileServiceTest {
         assertEquals("I love pasta.", response.getBio());
         assertEquals("https://example.com/avatar.jpg", response.getAvatarUrl());
         assertEquals(12L, response.getPublicRecipeCount());
+        assertNotNull(response.getPublicRecipes());
+        assertEquals(12, response.getPublicRecipes().size());
         assertEquals(42L, response.getFollowerCount());
         assertEquals(17L, response.getFollowingCount());
         assertFalse(response.isFollowedByCurrentUser());
@@ -135,22 +161,7 @@ class UserProfileServiceTest {
         when(userSnapshot.getLong("followerCount")).thenReturn(5L);
         when(userSnapshot.getLong("followingCount")).thenReturn(3L);
 
-        CollectionReference recipesCollection = mock(CollectionReference.class);
-        Query uidQuery = mock(Query.class);
-        Query publicQuery = mock(Query.class);
-        AggregateQuery aggregateQuery = mock(AggregateQuery.class);
-        @SuppressWarnings("unchecked")
-        ApiFuture<AggregateQuerySnapshot> countFuture = mock(ApiFuture.class);
-        AggregateQuerySnapshot countSnapshot = mock(AggregateQuerySnapshot.class);
-
-        when(firestore.collection("recipes")).thenReturn(recipesCollection);
-        when(recipesCollection.whereEqualTo("userId", uid)).thenReturn(uidQuery);
-        when(uidQuery.whereEqualTo("isPublic", true)).thenReturn(publicQuery);
-        when(publicQuery.count()).thenReturn(aggregateQuery);
-        when(aggregateQuery.get()).thenReturn(countFuture);
-        when(countFuture.get()).thenReturn(countSnapshot);
-        when(countSnapshot.getCount()).thenReturn(0L);
-
+        mockPublicRecipesQuery(uid, Collections.emptyList());
         when(followService.isFollowing(currentUserId, uid)).thenReturn(true);
 
         // Act
@@ -187,22 +198,7 @@ class UserProfileServiceTest {
         when(userSnapshot.getLong("followerCount")).thenReturn(null);
         when(userSnapshot.getLong("followingCount")).thenReturn(null);
 
-        CollectionReference recipesCollection = mock(CollectionReference.class);
-        Query uidQuery = mock(Query.class);
-        Query publicQuery = mock(Query.class);
-        AggregateQuery aggregateQuery = mock(AggregateQuery.class);
-        @SuppressWarnings("unchecked")
-        ApiFuture<AggregateQuerySnapshot> countFuture = mock(ApiFuture.class);
-        AggregateQuerySnapshot countSnapshot = mock(AggregateQuerySnapshot.class);
-
-        when(firestore.collection("recipes")).thenReturn(recipesCollection);
-        when(recipesCollection.whereEqualTo("userId", uid)).thenReturn(uidQuery);
-        when(uidQuery.whereEqualTo("isPublic", true)).thenReturn(publicQuery);
-        when(publicQuery.count()).thenReturn(aggregateQuery);
-        when(aggregateQuery.get()).thenReturn(countFuture);
-        when(countFuture.get()).thenReturn(countSnapshot);
-        when(countSnapshot.getCount()).thenReturn(0L);
-
+        mockPublicRecipesQuery(uid, Collections.emptyList());
         when(followService.isFollowing(currentUserId, uid)).thenReturn(false);
 
         // Act
@@ -237,21 +233,7 @@ class UserProfileServiceTest {
         when(userSnapshot.getLong("followerCount")).thenReturn(10L);
         when(userSnapshot.getLong("followingCount")).thenReturn(2L);
 
-        CollectionReference recipesCollection = mock(CollectionReference.class);
-        Query uidQuery = mock(Query.class);
-        Query publicQuery = mock(Query.class);
-        AggregateQuery aggregateQuery = mock(AggregateQuery.class);
-        @SuppressWarnings("unchecked")
-        ApiFuture<AggregateQuerySnapshot> countFuture = mock(ApiFuture.class);
-        AggregateQuerySnapshot countSnapshot = mock(AggregateQuerySnapshot.class);
-
-        when(firestore.collection("recipes")).thenReturn(recipesCollection);
-        when(recipesCollection.whereEqualTo("userId", uid)).thenReturn(uidQuery);
-        when(uidQuery.whereEqualTo("isPublic", true)).thenReturn(publicQuery);
-        when(publicQuery.count()).thenReturn(aggregateQuery);
-        when(aggregateQuery.get()).thenReturn(countFuture);
-        when(countFuture.get()).thenReturn(countSnapshot);
-        when(countSnapshot.getCount()).thenReturn(0L);
+        mockPublicRecipesQuery(uid, Collections.emptyList());
 
         // Act - null currentUserId simulates unauthenticated caller
         UserProfileResponse response = userProfileService.getUserProfile(uid, null);
@@ -306,21 +288,17 @@ class UserProfileServiceTest {
         when(userFuture.get()).thenReturn(userSnapshot);
         when(userSnapshot.exists()).thenReturn(false);
 
-        CollectionReference recipesCollection = mock(CollectionReference.class);
-        Query uidQuery = mock(Query.class);
-        Query publicQuery = mock(Query.class);
-        AggregateQuery aggregateQuery = mock(AggregateQuery.class);
-        @SuppressWarnings("unchecked")
-        ApiFuture<AggregateQuerySnapshot> countFuture = mock(ApiFuture.class);
-        AggregateQuerySnapshot countSnapshot = mock(AggregateQuerySnapshot.class);
-
-        when(firestore.collection("recipes")).thenReturn(recipesCollection);
-        when(recipesCollection.whereEqualTo("userId", uid)).thenReturn(uidQuery);
-        when(uidQuery.whereEqualTo("isPublic", true)).thenReturn(publicQuery);
-        when(publicQuery.count()).thenReturn(aggregateQuery);
-        when(aggregateQuery.get()).thenReturn(countFuture);
-        when(countFuture.get()).thenReturn(countSnapshot);
-        when(countSnapshot.getCount()).thenReturn(4L);
+        // 4 public recipes
+        List<QueryDocumentSnapshot> recipeDocs = new java.util.ArrayList<>();
+        for (int i = 0; i < 4; i++) {
+            QueryDocumentSnapshot doc = mock(QueryDocumentSnapshot.class);
+            Recipe recipe = Recipe.builder().id("recipe-" + i).userId(uid).recipeName("Recipe " + i).publicRecipe(true).build();
+            when(doc.toObject(Recipe.class)).thenReturn(recipe);
+            RecipeResponse recipeResponse = RecipeResponse.builder().id("recipe-" + i).userId(uid).title("Recipe " + i).isPublic(true).build();
+            when(recipeService.mapToResponse(recipe)).thenReturn(recipeResponse);
+            recipeDocs.add(doc);
+        }
+        mockPublicRecipesQuery(uid, recipeDocs);
 
         when(firebaseAuth.getUser(uid)).thenReturn(userRecord);
         when(userRecord.getDisplayName()).thenReturn("Chef Andy");
@@ -421,7 +399,7 @@ class UserProfileServiceTest {
     }
 
     @Test
-    void getUserProfile_CountPublicRecipesInterrupted_Throws503() throws ExecutionException, InterruptedException {
+    void getUserProfile_FetchPublicRecipesInterrupted_Throws503() throws ExecutionException, InterruptedException {
         // Arrange
         String uid = "user123";
 
@@ -443,16 +421,14 @@ class UserProfileServiceTest {
         CollectionReference recipesCollection = mock(CollectionReference.class);
         Query uidQuery = mock(Query.class);
         Query publicQuery = mock(Query.class);
-        AggregateQuery aggregateQuery = mock(AggregateQuery.class);
         @SuppressWarnings("unchecked")
-        ApiFuture<AggregateQuerySnapshot> countFuture = mock(ApiFuture.class);
+        ApiFuture<QuerySnapshot> queryFuture = mock(ApiFuture.class);
 
         when(firestore.collection("recipes")).thenReturn(recipesCollection);
         when(recipesCollection.whereEqualTo("userId", uid)).thenReturn(uidQuery);
         when(uidQuery.whereEqualTo("isPublic", true)).thenReturn(publicQuery);
-        when(publicQuery.count()).thenReturn(aggregateQuery);
-        when(aggregateQuery.get()).thenReturn(countFuture);
-        when(countFuture.get()).thenThrow(new InterruptedException("interrupted"));
+        when(publicQuery.get()).thenReturn(queryFuture);
+        when(queryFuture.get()).thenThrow(new InterruptedException("interrupted"));
 
         // Act & Assert
         ResponseStatusException exception = assertThrows(
@@ -462,7 +438,7 @@ class UserProfileServiceTest {
     }
 
     @Test
-    void getUserProfile_CountPublicRecipesExecutionException_Throws503() throws ExecutionException, InterruptedException {
+    void getUserProfile_FetchPublicRecipesExecutionException_Throws503() throws ExecutionException, InterruptedException {
         // Arrange
         String uid = "user123";
 
@@ -484,16 +460,14 @@ class UserProfileServiceTest {
         CollectionReference recipesCollection = mock(CollectionReference.class);
         Query uidQuery = mock(Query.class);
         Query publicQuery = mock(Query.class);
-        AggregateQuery aggregateQuery = mock(AggregateQuery.class);
         @SuppressWarnings("unchecked")
-        ApiFuture<AggregateQuerySnapshot> countFuture = mock(ApiFuture.class);
+        ApiFuture<QuerySnapshot> queryFuture = mock(ApiFuture.class);
 
         when(firestore.collection("recipes")).thenReturn(recipesCollection);
         when(recipesCollection.whereEqualTo("userId", uid)).thenReturn(uidQuery);
         when(uidQuery.whereEqualTo("isPublic", true)).thenReturn(publicQuery);
-        when(publicQuery.count()).thenReturn(aggregateQuery);
-        when(aggregateQuery.get()).thenReturn(countFuture);
-        when(countFuture.get()).thenThrow(new ExecutionException("error", new RuntimeException()));
+        when(publicQuery.get()).thenReturn(queryFuture);
+        when(queryFuture.get()).thenThrow(new ExecutionException("error", new RuntimeException()));
 
         // Act & Assert
         ResponseStatusException exception = assertThrows(
@@ -503,7 +477,7 @@ class UserProfileServiceTest {
     }
 
     @Test
-    void getUserProfile_ZeroPublicRecipes_ReturnsZeroCount()
+    void getUserProfile_ZeroPublicRecipes_ReturnsEmptyListAndZeroCount()
             throws ExecutionException, InterruptedException {
         // Arrange
         String uid = "user456";
@@ -521,22 +495,7 @@ class UserProfileServiceTest {
         when(userSnapshot.exists()).thenReturn(true);
         when(userSnapshot.getString(anyString())).thenReturn(null);
 
-        // Mock recipe count = 0
-        CollectionReference recipesCollection = mock(CollectionReference.class);
-        Query uidQuery = mock(Query.class);
-        Query publicQuery = mock(Query.class);
-        AggregateQuery aggregateQuery = mock(AggregateQuery.class);
-        @SuppressWarnings("unchecked")
-        ApiFuture<AggregateQuerySnapshot> countFuture = mock(ApiFuture.class);
-        AggregateQuerySnapshot countSnapshot = mock(AggregateQuerySnapshot.class);
-
-        when(firestore.collection("recipes")).thenReturn(recipesCollection);
-        when(recipesCollection.whereEqualTo("userId", uid)).thenReturn(uidQuery);
-        when(uidQuery.whereEqualTo("isPublic", true)).thenReturn(publicQuery);
-        when(publicQuery.count()).thenReturn(aggregateQuery);
-        when(aggregateQuery.get()).thenReturn(countFuture);
-        when(countFuture.get()).thenReturn(countSnapshot);
-        when(countSnapshot.getCount()).thenReturn(0L);
+        mockPublicRecipesQuery(uid, Collections.emptyList());
 
         // Act
         UserProfileResponse response = userProfileService.getUserProfile(uid, null);
@@ -545,5 +504,7 @@ class UserProfileServiceTest {
         assertNotNull(response);
         assertEquals(uid, response.getUid());
         assertEquals(0L, response.getPublicRecipeCount());
+        assertNotNull(response.getPublicRecipes());
+        assertTrue(response.getPublicRecipes().isEmpty());
     }
 }
