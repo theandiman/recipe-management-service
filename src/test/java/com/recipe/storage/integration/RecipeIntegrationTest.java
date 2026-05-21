@@ -107,11 +107,11 @@ class RecipeIntegrationTest {
     void testGetRecipeById() {
         HttpEntity<Void> entity = new HttpEntity<>(getAuthHeaders(TEST_USER_ID));
 
-        ResponseEntity<String> response = restTemplate.exchange(
+        ResponseEntity<RecipeResponse> response = restTemplate.exchange(
                 getBaseUrl() + "/" + recipeId,
                 HttpMethod.GET,
                 entity,
-                String.class);
+                RecipeResponse.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).isNotNull();
@@ -125,11 +125,11 @@ class RecipeIntegrationTest {
     void testGetRecipeByIdForbidden() {
         HttpEntity<Void> entity = new HttpEntity<>(getAuthHeaders(OTHER_USER_ID));
 
-        ResponseEntity<RecipeResponse> response = restTemplate.exchange(
+        ResponseEntity<String> response = restTemplate.exchange(
                 getBaseUrl() + "/" + recipeId,
                 HttpMethod.GET,
                 entity,
-                RecipeResponse.class);
+                String.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
     }
@@ -257,11 +257,11 @@ class RecipeIntegrationTest {
 
         HttpEntity<CreateRecipeRequest> entity = new HttpEntity<>(updateRequest, getAuthHeaders(TEST_USER_ID));
 
-        ResponseEntity<String> response = restTemplate.exchange(
+        ResponseEntity<RecipeResponse> response = restTemplate.exchange(
                 getBaseUrl() + "/" + recipeId,
                 HttpMethod.PUT,
                 entity,
-                String.class);
+                RecipeResponse.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).isNotNull();
@@ -277,11 +277,11 @@ class RecipeIntegrationTest {
         CreateRecipeRequest updateRequest = createTestRecipe("Hacked Title", false);
         HttpEntity<CreateRecipeRequest> entity = new HttpEntity<>(updateRequest, getAuthHeaders(OTHER_USER_ID));
 
-        ResponseEntity<RecipeResponse> response = restTemplate.exchange(
+        ResponseEntity<String> response = restTemplate.exchange(
                 getBaseUrl() + "/" + recipeId,
                 HttpMethod.PUT,
                 entity,
-                RecipeResponse.class);
+                String.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
     }
