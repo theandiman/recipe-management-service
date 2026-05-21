@@ -4,10 +4,15 @@ import com.recipe.storage.dto.CreateRecipeRequest;
 import com.recipe.storage.dto.PagedRecipeResponse;
 import com.recipe.storage.dto.RecipeResponse;
 import com.recipe.storage.dto.UpdateSharingRequest;
-import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.boot.resttestclient.TestRestTemplate;
+import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureTestRestTemplate;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.*;
 import org.springframework.test.context.ActiveProfiles;
@@ -22,6 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * These tests verify all CRUD operations and business logic end-to-end.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@AutoConfigureTestRestTemplate
 @ActiveProfiles("test")
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class RecipeIntegrationTest {
@@ -119,11 +125,11 @@ class RecipeIntegrationTest {
     void testGetRecipeByIdForbidden() {
         HttpEntity<Void> entity = new HttpEntity<>(getAuthHeaders(OTHER_USER_ID));
 
-        ResponseEntity<RecipeResponse> response = restTemplate.exchange(
+        ResponseEntity<String> response = restTemplate.exchange(
                 getBaseUrl() + "/" + recipeId,
                 HttpMethod.GET,
                 entity,
-                RecipeResponse.class);
+                String.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
     }
@@ -271,11 +277,11 @@ class RecipeIntegrationTest {
         CreateRecipeRequest updateRequest = createTestRecipe("Hacked Title", false);
         HttpEntity<CreateRecipeRequest> entity = new HttpEntity<>(updateRequest, getAuthHeaders(OTHER_USER_ID));
 
-        ResponseEntity<RecipeResponse> response = restTemplate.exchange(
+        ResponseEntity<String> response = restTemplate.exchange(
                 getBaseUrl() + "/" + recipeId,
                 HttpMethod.PUT,
                 entity,
-                RecipeResponse.class);
+                String.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
     }
@@ -316,11 +322,11 @@ class RecipeIntegrationTest {
     void testGetDeletedRecipe() {
         HttpEntity<Void> entity = new HttpEntity<>(getAuthHeaders(TEST_USER_ID));
 
-        ResponseEntity<RecipeResponse> response = restTemplate.exchange(
+        ResponseEntity<String> response = restTemplate.exchange(
                 getBaseUrl() + "/" + recipeId,
                 HttpMethod.GET,
                 entity,
-                RecipeResponse.class);
+                String.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
     }
@@ -335,10 +341,10 @@ class RecipeIntegrationTest {
 
         HttpEntity<CreateRecipeRequest> entity = new HttpEntity<>(request, getAuthHeaders(TEST_USER_ID));
 
-        ResponseEntity<RecipeResponse> response = restTemplate.postForEntity(
+        ResponseEntity<String> response = restTemplate.postForEntity(
                 getBaseUrl(),
                 entity,
-                RecipeResponse.class);
+                String.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
     }
