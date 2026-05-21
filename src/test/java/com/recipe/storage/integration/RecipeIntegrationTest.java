@@ -107,11 +107,11 @@ class RecipeIntegrationTest {
     void testGetRecipeById() {
         HttpEntity<Void> entity = new HttpEntity<>(getAuthHeaders(TEST_USER_ID));
 
-        ResponseEntity<RecipeResponse> response = restTemplate.exchange(
+        ResponseEntity<String> response = restTemplate.exchange(
                 getBaseUrl() + "/" + recipeId,
                 HttpMethod.GET,
                 entity,
-                RecipeResponse.class);
+                String.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).isNotNull();
@@ -257,11 +257,11 @@ class RecipeIntegrationTest {
 
         HttpEntity<CreateRecipeRequest> entity = new HttpEntity<>(updateRequest, getAuthHeaders(TEST_USER_ID));
 
-        ResponseEntity<RecipeResponse> response = restTemplate.exchange(
+        ResponseEntity<String> response = restTemplate.exchange(
                 getBaseUrl() + "/" + recipeId,
                 HttpMethod.PUT,
                 entity,
-                RecipeResponse.class);
+                String.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).isNotNull();
@@ -322,11 +322,11 @@ class RecipeIntegrationTest {
     void testGetDeletedRecipe() {
         HttpEntity<Void> entity = new HttpEntity<>(getAuthHeaders(TEST_USER_ID));
 
-        ResponseEntity<RecipeResponse> response = restTemplate.exchange(
+        ResponseEntity<String> response = restTemplate.exchange(
                 getBaseUrl() + "/" + recipeId,
                 HttpMethod.GET,
                 entity,
-                RecipeResponse.class);
+                String.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
     }
@@ -341,10 +341,10 @@ class RecipeIntegrationTest {
 
         HttpEntity<CreateRecipeRequest> entity = new HttpEntity<>(request, getAuthHeaders(TEST_USER_ID));
 
-        ResponseEntity<RecipeResponse> response = restTemplate.postForEntity(
+        ResponseEntity<String> response = restTemplate.postForEntity(
                 getBaseUrl(),
                 entity,
-                RecipeResponse.class);
+                String.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
     }
