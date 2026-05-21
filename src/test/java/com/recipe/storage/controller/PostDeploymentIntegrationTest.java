@@ -1,6 +1,6 @@
 package com.recipe.storage.controller;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.recipe.storage.dto.CreateRecipeRequest;
 import com.recipe.storage.dto.RecipeResponse;
 import org.junit.jupiter.api.DisplayName;
