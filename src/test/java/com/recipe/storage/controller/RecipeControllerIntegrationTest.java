@@ -69,6 +69,27 @@ class RecipeControllerIntegrationTest {
     }
 
     @Test
+    void createRecipe_NullIsPublic_DefaultsToPrivate() throws Exception {
+        String request = """
+                {
+                  "title": "Private Pasta",
+                  "ingredients": ["200g pasta"],
+                  "instructions": ["Cook pasta"],
+                  "servings": 2,
+                  "source": "manual",
+                  "isPublic": null
+                }
+                """;
+
+        mockMvc.perform(post("/api/recipes")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(request)
+                .header("X-User-ID", "user123"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.isPublic").value(false));
+    }
+
+    @Test
     void createRecipe_MissingTitle_ReturnsBadRequest() throws Exception {
         CreateRecipeRequest request = CreateRecipeRequest.builder()
                 .description("A wonderful Italian pasta dish")
