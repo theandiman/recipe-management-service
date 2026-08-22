@@ -1,6 +1,5 @@
 package com.recipe.storage.dto;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
@@ -79,6 +78,9 @@ public class CreateRecipeRequest {
     private List<String> dietaryRestrictions;
 
     @Schema(description = "Whether the recipe is shared with everyone", example = "true", defaultValue = "false")
-    @JsonProperty("isPublic")
-    private boolean isPublic;
+    private Boolean isPublic;
+
+    public void setPublic(boolean isPublic) {
+        this.isPublic = isPublic;
+    }
 }

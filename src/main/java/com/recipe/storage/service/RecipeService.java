@@ -100,7 +100,7 @@ public class RecipeService {
           .source(request.getSource())
           .tags(request.getTags())
           .dietaryRestrictions(request.getDietaryRestrictions())
-          .publicRecipe(request.isPublic())
+          .publicRecipe(Boolean.TRUE.equals(request.getIsPublic()))
           .createdAt(now)
           .updatedAt(now)
           .build();
@@ -175,7 +175,7 @@ public class RecipeService {
           .source(request.getSource())
           .tags(request.getTags())
           .dietaryRestrictions(request.getDietaryRestrictions())
-          .publicRecipe(request.isPublic())
+          .publicRecipe(Boolean.TRUE.equals(request.getIsPublic()))
           .updatedAt(now)
           .build();
 
@@ -217,7 +217,7 @@ public class RecipeService {
         .source(request.getSource())
         .tags(request.getTags())
         .dietaryRestrictions(request.getDietaryRestrictions())
-        .publicRecipe(request.isPublic())
+        .publicRecipe(Boolean.TRUE.equals(request.getIsPublic()))
         .createdAt(now)
         .updatedAt(now)
         .build();
@@ -260,7 +260,7 @@ public class RecipeService {
         .source(request.getSource())
         .tags(request.getTags())
         .dietaryRestrictions(request.getDietaryRestrictions())
-        .publicRecipe(request.isPublic())
+        .publicRecipe(Boolean.TRUE.equals(request.getIsPublic()))
         .updatedAt(now)
         .build();
 
