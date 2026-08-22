@@ -78,8 +78,7 @@ public class CreateRecipeRequest {
     private List<String> dietaryRestrictions;
 
     @Schema(description = "Whether the recipe is shared with everyone", example = "true", defaultValue = "false")
-    private Boolean isPublic;
-
+    @com.fasterxml.jackson.annotation.JsonIgnore
     public void setPublic(boolean isPublic) {
         this.isPublic = isPublic;
     }
