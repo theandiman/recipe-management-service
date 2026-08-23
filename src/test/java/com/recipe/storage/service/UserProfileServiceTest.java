@@ -1,6 +1,7 @@
 package com.recipe.storage.service;
 
 import com.google.api.core.ApiFuture;
+import com.google.cloud.Timestamp;
 import com.google.cloud.firestore.CollectionReference;
 import com.google.cloud.firestore.DocumentReference;
 import com.google.cloud.firestore.DocumentSnapshot;
@@ -8,14 +9,20 @@ import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.Query;
 import com.google.cloud.firestore.QueryDocumentSnapshot;
 import com.google.cloud.firestore.QuerySnapshot;
+import com.google.cloud.firestore.SetOptions;
 import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.auth.UserRecord;
+import com.recipe.storage.dto.ProfileVisibility;
 import com.recipe.shared.model.Recipe;
 import com.recipe.storage.dto.RecipeResponse;
+import com.recipe.storage.dto.SelfUserProfileResponse;
+import com.recipe.storage.dto.UpdateUserProfileRequest;
 import com.recipe.storage.dto.UserProfileResponse;
+import java.time.Instant;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
@@ -29,10 +36,14 @@ import java.util.concurrent.ExecutionException;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -506,5 +517,136 @@ class UserProfileServiceTest {
         assertEquals(0L, response.getPublicRecipeCount());
         assertNotNull(response.getPublicRecipes());
         assertTrue(response.getPublicRecipes().isEmpty());
+    }
+
+    @Test
+    void getUserProfile_PrivateProfile_DoesNotExposePrivateFields()
+            throws ExecutionException, InterruptedException {
+        String uid = "private-user";
+
+        CollectionReference usersCollection = mock(CollectionReference.class);
+        DocumentReference userDocRef = mock(DocumentReference.class);
+        @SuppressWarnings("unchecked")
+        ApiFuture<DocumentSnapshot> userFuture = mock(ApiFuture.class);
+        DocumentSnapshot userSnapshot = mock(DocumentSnapshot.class);
+
+        when(firestore.collection("users")).thenReturn(usersCollection);
+        when(usersCollection.document(uid)).thenReturn(userDocRef);
+        when(userDocRef.get()).thenReturn(userFuture);
+        when(userFuture.get()).thenReturn(userSnapshot);
+        when(userSnapshot.exists()).thenReturn(true);
+        when(userSnapshot.getString("displayName")).thenReturn("Private Chef");
+        when(userSnapshot.getString("bio")).thenReturn("This is private.");
+        when(userSnapshot.getString("avatarUrl")).thenReturn("https://example.com/private.png");
+        when(userSnapshot.getString("visibility")).thenReturn("PRIVATE");
+        when(userSnapshot.getLong("followerCount")).thenReturn(24L);
+        when(userSnapshot.getLong("followingCount")).thenReturn(12L);
+        mockPublicRecipesQuery(uid, Collections.emptyList());
+
+        UserProfileResponse response = userProfileService.getUserProfile(uid, "caller");
+
+        assertEquals(uid, response.getUid());
+        assertNull(response.getDisplayName());
+        assertNull(response.getBio());
+        assertNull(response.getAvatarUrl());
+        assertEquals(0L, response.getFollowerCount());
+        assertEquals(0L, response.getFollowingCount());
+        assertFalse(response.isFollowedByCurrentUser());
+    }
+
+    @Test
+    void updateSelfProfile_WritesOnlyEditableFieldsAndPreservesDerivedCounts()
+            throws ExecutionException, InterruptedException {
+        String uid = "profile-owner";
+        CollectionReference usersCollection = mock(CollectionReference.class);
+        DocumentReference userDocRef = mock(DocumentReference.class);
+        @SuppressWarnings("unchecked")
+        ApiFuture<DocumentSnapshot> readFuture = mock(ApiFuture.class);
+        @SuppressWarnings("unchecked")
+        ApiFuture<com.google.cloud.firestore.WriteResult> writeFuture = mock(ApiFuture.class);
+        DocumentSnapshot userSnapshot = mock(DocumentSnapshot.class);
+        Instant createdAt = Instant.parse("2026-01-01T00:00:00Z");
+
+        when(firestore.collection("users")).thenReturn(usersCollection);
+        when(usersCollection.document(uid)).thenReturn(userDocRef);
+        when(userDocRef.get()).thenReturn(readFuture);
+        when(readFuture.get()).thenReturn(userSnapshot);
+        when(userSnapshot.exists()).thenReturn(true);
+        when(userSnapshot.getString("displayName")).thenReturn("Before");
+        when(userSnapshot.getString("bio")).thenReturn("Before bio");
+        when(userSnapshot.getString("avatarUrl")).thenReturn("https://example.com/before.png");
+        when(userSnapshot.getString("visibility")).thenReturn("PUBLIC");
+        when(userSnapshot.getTimestamp("createdAt")).thenReturn(
+                Timestamp.ofTimeSecondsAndNanos(createdAt.getEpochSecond(), createdAt.getNano()));
+        when(userSnapshot.getTimestamp("updatedAt")).thenReturn(
+                Timestamp.ofTimeSecondsAndNanos(createdAt.getEpochSecond(), createdAt.getNano()));
+        when(userSnapshot.getLong("followerCount")).thenReturn(9L);
+        when(userSnapshot.getLong("followingCount")).thenReturn(4L);
+        when(userDocRef.set(any(), eq(SetOptions.merge()))).thenReturn(writeFuture);
+
+        SelfUserProfileResponse response = userProfileService.updateSelfProfile(uid,
+                UpdateUserProfileRequest.builder()
+                        .displayName("After")
+                        .bio("Updated bio")
+                        .avatarUrl("https://example.com/after.png")
+                        .visibility(ProfileVisibility.PRIVATE)
+                        .build());
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Map<String, Object>> fieldsCaptor =
+                ArgumentCaptor.forClass(java.util.Map.class);
+        verify(userDocRef).set(fieldsCaptor.capture(), eq(SetOptions.merge()));
+        java.util.Map<String, Object> fields = fieldsCaptor.getValue();
+
+        assertEquals("After", fields.get("displayName"));
+        assertEquals("Updated bio", fields.get("bio"));
+        assertEquals("https://example.com/after.png", fields.get("avatarUrl"));
+        assertEquals("PRIVATE", fields.get("visibility"));
+        assertFalse(fields.containsKey("followerCount"));
+        assertFalse(fields.containsKey("followingCount"));
+        assertEquals(9L, response.getFollowerCount());
+        assertEquals(4L, response.getFollowingCount());
+        assertEquals(ProfileVisibility.PRIVATE, response.getVisibility());
+    }
+
+    @Test
+    void getSelfProfile_MissingDocumentBootstrapsFromFirebaseAuth() throws Exception {
+        String uid = "new-profile-owner";
+        ReflectionTestUtils.setField(userProfileService, "firebaseAuth", firebaseAuth);
+        CollectionReference usersCollection = mock(CollectionReference.class);
+        DocumentReference userDocRef = mock(DocumentReference.class);
+        @SuppressWarnings("unchecked")
+        ApiFuture<DocumentSnapshot> readFuture = mock(ApiFuture.class);
+        @SuppressWarnings("unchecked")
+        ApiFuture<com.google.cloud.firestore.WriteResult> writeFuture = mock(ApiFuture.class);
+        DocumentSnapshot userSnapshot = mock(DocumentSnapshot.class);
+
+        when(firestore.collection("users")).thenReturn(usersCollection);
+        when(usersCollection.document(uid)).thenReturn(userDocRef);
+        when(userDocRef.get()).thenReturn(readFuture);
+        when(readFuture.get()).thenReturn(userSnapshot);
+        when(userSnapshot.exists()).thenReturn(false);
+        when(firebaseAuth.getUser(uid)).thenReturn(userRecord);
+        when(userRecord.getDisplayName()).thenReturn("Bootstrap Chef");
+        when(userRecord.getPhotoUrl()).thenReturn("https://example.com/bootstrap.png");
+        when(userDocRef.set(any(), eq(SetOptions.merge()))).thenReturn(writeFuture);
+
+        SelfUserProfileResponse response = userProfileService.getSelfProfile(uid);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<java.util.Map<String, Object>> fieldsCaptor =
+                ArgumentCaptor.forClass(java.util.Map.class);
+        verify(userDocRef).set(fieldsCaptor.capture(), eq(SetOptions.merge()));
+        java.util.Map<String, Object> fields = fieldsCaptor.getValue();
+
+        assertEquals("Bootstrap Chef", response.getDisplayName());
+        assertEquals("https://example.com/bootstrap.png", response.getAvatarUrl());
+        assertEquals(ProfileVisibility.PUBLIC, response.getVisibility());
+        assertEquals(0L, response.getFollowerCount());
+        assertEquals(0L, response.getFollowingCount());
+        assertTrue(fields.containsKey("createdAt"));
+        assertTrue(fields.containsKey("updatedAt"));
+        assertEquals(0L, fields.get("followerCount"));
+        assertEquals(0L, fields.get("followingCount"));
     }
 }

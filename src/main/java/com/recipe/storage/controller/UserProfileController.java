@@ -1,7 +1,10 @@
 package com.recipe.storage.controller;
 
 import com.recipe.storage.dto.PagedFollowResponse;
+import com.recipe.storage.dto.SelfUserProfileResponse;
+import com.recipe.storage.dto.UpdateUserProfileRequest;
 import com.recipe.storage.dto.UserProfileResponse;
+import com.recipe.storage.dto.ValidationErrorResponse;
 import com.recipe.storage.service.FollowService;
 import com.recipe.storage.service.UserProfileService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -13,6 +16,7 @@ import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.security.SecurityRequirements;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import lombok.RequiredArgsConstructor;
@@ -24,24 +28,82 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestAttribute;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * REST controller for public user profile operations.
+ * REST controller for public and self-service user profile operations.
  */
 @Slf4j
 @RestController
 @RequestMapping("/api/users")
 @RequiredArgsConstructor
 @Validated
-@Tag(name = "User Profiles", description = "APIs for accessing public user profile information")
+@Tag(name = "User Profiles", description = "APIs for public and authenticated self profiles")
 public class UserProfileController {
 
   private final UserProfileService userProfileService;
   private final FollowService followService;
+
+  /**
+   * Get the complete canonical profile for the authenticated user.
+   *
+   * @param userId Firebase UID injected by the authentication filter
+   * @return owner-only canonical profile
+   */
+  @GetMapping("/me/profile")
+  @SecurityRequirement(name = "Firebase Auth")
+  @Operation(
+      summary = "Get my profile",
+      description = "Returns the authenticated user's complete canonical profile, including "
+          + "visibility, timestamps, and derived follow counts. If no Firestore profile exists, "
+          + "Firebase Auth supplies bootstrap display-name and avatar values.")
+  @ApiResponses(value = {
+      @ApiResponse(
+          responseCode = "200",
+          description = "Canonical profile retrieved successfully",
+          content = @Content(schema = @Schema(implementation = SelfUserProfileResponse.class))),
+      @ApiResponse(responseCode = "401", description = "Unauthorized", content = @Content),
+      @ApiResponse(responseCode = "404", description = "User not found", content = @Content)
+  })
+  public ResponseEntity<SelfUserProfileResponse> getSelfProfile(
+      @Parameter(hidden = true) @RequestAttribute("userId") String userId) {
+    return ResponseEntity.ok(userProfileService.getSelfProfile(userId));
+  }
+
+  /**
+   * Replace editable fields on the authenticated user's canonical profile.
+   *
+   * @param request validated editable profile fields
+   * @param userId Firebase UID injected by the authentication filter
+   * @return updated owner-only canonical profile
+   */
+  @PutMapping("/me/profile")
+  @SecurityRequirement(name = "Firebase Auth")
+  @Operation(
+      summary = "Update my profile",
+      description = "Replaces editable fields on the authenticated user's canonical profile. "
+          + "UIDs, timestamps, and follow counts are service-owned and rejected when supplied.")
+  @ApiResponses(value = {
+      @ApiResponse(
+          responseCode = "200",
+          description = "Canonical profile updated successfully",
+          content = @Content(schema = @Schema(implementation = SelfUserProfileResponse.class))),
+      @ApiResponse(
+          responseCode = "400",
+          description = "Invalid or unsupported profile fields",
+          content = @Content(schema = @Schema(implementation = ValidationErrorResponse.class))),
+      @ApiResponse(responseCode = "401", description = "Unauthorized", content = @Content)
+  })
+  public ResponseEntity<SelfUserProfileResponse> updateSelfProfile(
+      @Valid @RequestBody UpdateUserProfileRequest request,
+      @Parameter(hidden = true) @RequestAttribute("userId") String userId) {
+    return ResponseEntity.ok(userProfileService.updateSelfProfile(userId, request));
+  }
 
   /**
    * Get the public profile for a specific user.
@@ -57,7 +119,9 @@ public class UserProfileController {
       description = "Retrieves the public profile for a given user uid, including their display "
           + "name, bio, avatar URL, count of public recipes, follower/following counts, and "
           + "whether the authenticated caller follows this user. No authentication required; "
-          + "isFollowedByCurrentUser is only populated when a valid token is provided.")
+          + "isFollowedByCurrentUser is only populated when a valid token is provided. Profiles "
+          + "with PRIVATE visibility retain public recipe compatibility but omit personal fields "
+          + "and derived follow counts.")
   @ApiResponses(value = {
       @ApiResponse(
           responseCode = "200",

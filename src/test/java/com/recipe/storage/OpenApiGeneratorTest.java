@@ -1,8 +1,11 @@
 package com.recipe.storage;
 
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -40,5 +43,21 @@ class OpenApiGeneratorTest {
         }
 
         Files.writeString(targetPath.resolve("openapi.json"), content);
+    }
+
+    @Test
+    void documentsAuthenticatedSelfProfileContract() throws Exception {
+        MvcResult result = mockMvc.perform(get("/v3/api-docs"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        JsonNode openApi = new ObjectMapper().readTree(result.getResponse().getContentAsString());
+        JsonNode selfProfile = openApi.path("paths").path("/api/users/me/profile");
+
+        assertTrue(selfProfile.has("get"));
+        assertTrue(selfProfile.has("put"));
+        assertTrue(selfProfile.path("get").path("responses").has("200"));
+        assertTrue(selfProfile.path("put").path("responses").has("400"));
+        assertTrue(selfProfile.path("put").path("requestBody").isObject());
     }
 }

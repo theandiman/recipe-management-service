@@ -302,6 +302,21 @@ class FirebaseAuthenticationFilterTest {
     }
 
     @Test
+    void doFilterInternal_SelfProfilePath_WithoutToken_RequiresAuthentication()
+            throws ServletException, IOException {
+        ReflectionTestUtils.setField(filter, "authEnabled", true);
+        when(request.getMethod()).thenReturn("GET");
+        when(request.getRequestURI()).thenReturn("/api/users/me/profile");
+        when(request.getHeader("Authorization")).thenReturn(null);
+
+        filter.doFilterInternal(request, response, filterChain);
+
+        verify(response).sendError(HttpServletResponse.SC_UNAUTHORIZED,
+                "Missing or invalid Authorization header");
+        verifyNoInteractions(filterChain);
+    }
+
+    @Test
     void doFilterInternal_UserProfilePath_AuthEnabled_NoAuthHeader_ProceedsWithoutUserId()
             throws ServletException, IOException {
         // Arrange

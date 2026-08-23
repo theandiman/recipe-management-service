@@ -90,7 +90,8 @@ public class FirebaseAuthenticationFilter extends OncePerRequestFilter {
       // Skip auth for public user profile endpoint (read-only methods only).
       // Optionally extract the authenticated user ID so the service can populate
       // isFollowedByCurrentUser when a valid token is supplied.
-      if (path.matches("/api/users/[^/]+/profile")
+      if (!path.equals("/api/users/me/profile")
+          && path.matches("/api/users/[^/]+/profile")
           && ("GET".equals(method) || "HEAD".equals(method))) {
         trySetOptionalUserId(request);
         filterChain.doFilter(request, response);

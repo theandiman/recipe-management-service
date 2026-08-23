@@ -121,6 +121,33 @@ environment:
 
 📘 **[API Documentation](https://theandiman.github.io/recipe-management-service/)** - View the interactive Swagger UI for full API details.
 
+### User Profiles
+
+Canonical profile documents are stored in `users/{uid}`. The document contains `displayName`,
+`bio`, `avatarUrl`, `visibility`, `createdAt`, `updatedAt`, and service-derived
+`followerCount`/`followingCount` fields. Clients can only manage their own profile:
+
+```http
+GET /api/users/me/profile
+Authorization: Bearer <firebase-id-token>
+
+PUT /api/users/me/profile
+Authorization: Bearer <firebase-id-token>
+Content-Type: application/json
+
+{
+  "displayName": "Chef Andy",
+  "bio": "Home cook and pasta enthusiast",
+  "avatarUrl": "https://example.com/avatar.png",
+  "visibility": "PUBLIC"
+}
+```
+
+`PUT` accepts only the editable fields above. Attempts to set UIDs, timestamps, or follow counts
+return a documented `400` validation response. Public profile reads remain available at
+`GET /api/users/{uid}/profile`; profiles marked `PRIVATE` omit personal fields and follow counts.
+Firebase Auth is used only to bootstrap a missing self-profile document.
+
 ### Save Recipe
 ```http
 POST /api/recipes
