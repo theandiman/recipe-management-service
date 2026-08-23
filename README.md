@@ -146,7 +146,32 @@ Content-Type: application/json
 `PUT` accepts only the editable fields above. Attempts to set UIDs, timestamps, or follow counts
 return a documented `400` validation response. Public profile reads remain available at
 `GET /api/users/{uid}/profile`; profiles marked `PRIVATE` omit personal fields and follow counts.
-Firebase Auth is used only to bootstrap a missing self-profile document.
+
+### Profile lifecycle and consistency
+
+- `GET /api/users/me/profile` transactionally creates a missing canonical profile and repairs
+  missing legacy metadata. It is safe to retry. A successfully authenticated caller receives a
+  usable profile even if Firebase Auth's display-name/photo lookup is temporarily unavailable;
+  that lookup supplies optional seed metadata only and never overwrites client-managed fields.
+- Public reads are read-only. They use Firebase Auth only as a display-name/avatar fallback for
+  public profiles with missing metadata. If an older recipe author has public recipes but no
+  profile document or Firebase Auth record, the API returns a placeholder profile instead of
+  failing the recipe-author view. Public reads do not create profile documents.
+- `POST /api/users/me/profile/repair` is an authenticated, per-user repair operation. It safely
+  backfills canonical metadata and rebuilds `followerCount` and `followingCount` from that
+  user's two follow indexes. It is idempotent, runs in Firestore transactions, and never deletes
+  profile, recipe, follow, avatar, or cache data. Follow and unfollow operations also clamp
+  counters at zero, so persisted counters cannot become negative.
+- The service has no account-delete, profile-delete, bulk cleanup, or anonymization endpoint.
+  Deleting a Firebase Auth account does not automatically remove this service's recipes,
+  profiles, follows, or avatar URL. Avatar objects and caches are owned by their respective
+  services; this service stores only the avatar URL. Any future account-removal workflow must be
+  explicitly authorized, scoped to one UID, previewed and test-covered before it removes or
+  anonymizes recipes, follows, profile data, storage objects, or cached entries.
+
+Lifecycle events are logged with the authenticated UID. Failed profile bootstrap or counter
+reconciliation is logged as an error and returns `503`, allowing callers and operational
+telemetry to distinguish an unavailable dependency from a missing legacy profile.
 
 ### Save Recipe
 ```http
@@ -250,6 +275,8 @@ Content-Type: application/json
 | `GOOGLE_APPLICATION_CREDENTIALS` | Path to Firebase service account JSON | `/secrets/firebase-sa.json` |
 | `AUTH_ENABLED` | Enable/disable Firebase auth | `true` |
 | `FIRESTORE_COLLECTION_RECIPES` | Firestore collection name | `recipes` |
+| `FIRESTORE_COLLECTION_USERS` | Canonical profile collection name | `users` |
+| `FIRESTORE_COLLECTION_FOLLOWS` | Follow-index collection name | `follows` |
 
 ## Testing
 

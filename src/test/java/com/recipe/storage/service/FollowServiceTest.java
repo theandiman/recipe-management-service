@@ -5,7 +5,6 @@ import com.google.cloud.Timestamp;
 import com.google.cloud.firestore.CollectionReference;
 import com.google.cloud.firestore.DocumentReference;
 import com.google.cloud.firestore.DocumentSnapshot;
-import com.google.cloud.firestore.FieldValue;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.Query;
 import com.google.cloud.firestore.QueryDocumentSnapshot;
@@ -33,7 +32,6 @@ import java.util.concurrent.ExecutionException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -120,10 +118,18 @@ class FollowServiceTest {
         // Capture the transaction callback and execute it with a mock Transaction
         Transaction mockTx = mock(Transaction.class);
         ApiFuture<DocumentSnapshot> snapFuture = mock(ApiFuture.class);
+        ApiFuture<DocumentSnapshot> followerProfileFuture = mock(ApiFuture.class);
+        ApiFuture<DocumentSnapshot> followedProfileFuture = mock(ApiFuture.class);
         DocumentSnapshot followSnapshot = mock(DocumentSnapshot.class);
+        DocumentSnapshot followerProfile = mock(DocumentSnapshot.class);
+        DocumentSnapshot followedProfile = mock(DocumentSnapshot.class);
         when(followSnapshot.exists()).thenReturn(false);
         when(mockTx.get(followDocRef)).thenReturn(snapFuture);
         when(snapFuture.get()).thenReturn(followSnapshot);
+        when(mockTx.get(followerUserRef)).thenReturn(followerProfileFuture);
+        when(followerProfileFuture.get()).thenReturn(followerProfile);
+        when(mockTx.get(followedUserRef)).thenReturn(followedProfileFuture);
+        when(followedProfileFuture.get()).thenReturn(followedProfile);
         when(mockTx.set(any(), any())).thenReturn(mockTx);
         when(mockTx.set(any(), any(), any())).thenReturn(mockTx);
 
@@ -154,12 +160,12 @@ class FollowServiceTest {
         Map<?, ?> followerMap = followerMapCaptor.getValue();
         assertTrue(followerMap.containsKey("followingCount"),
                 "follower profile must have followingCount updated");
-        assertInstanceOf(FieldValue.class, followerMap.get("followingCount"));
+        assertEquals(1L, followerMap.get("followingCount"));
 
         Map<?, ?> followedMap = followedMapCaptor.getValue();
         assertTrue(followedMap.containsKey("followerCount"),
                 "followed profile must have followerCount updated");
-        assertInstanceOf(FieldValue.class, followedMap.get("followerCount"));
+        assertEquals(1L, followedMap.get("followerCount"));
     }
 
     @Test
@@ -285,7 +291,7 @@ class FollowServiceTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void unfollowUser_ExistingFollow_DeletesAndDecrementsCounters() throws Exception {
+    void unfollowUser_ExistingFollow_ClampsNegativeCountersAtZero() throws Exception {
         String followerId = "follower1";
         String followedId = "followed2";
 
@@ -316,10 +322,20 @@ class FollowServiceTest {
 
         Transaction mockTx = mock(Transaction.class);
         ApiFuture<DocumentSnapshot> snapFuture = mock(ApiFuture.class);
+        ApiFuture<DocumentSnapshot> followerProfileFuture = mock(ApiFuture.class);
+        ApiFuture<DocumentSnapshot> followedProfileFuture = mock(ApiFuture.class);
         DocumentSnapshot followSnapshot = mock(DocumentSnapshot.class);
+        DocumentSnapshot followerProfile = mock(DocumentSnapshot.class);
+        DocumentSnapshot followedProfile = mock(DocumentSnapshot.class);
         when(followSnapshot.exists()).thenReturn(true);
         when(mockTx.get(followDocRef)).thenReturn(snapFuture);
         when(snapFuture.get()).thenReturn(followSnapshot);
+        when(mockTx.get(followerUserRef)).thenReturn(followerProfileFuture);
+        when(followerProfileFuture.get()).thenReturn(followerProfile);
+        when(followerProfile.getLong("followingCount")).thenReturn(-7L);
+        when(mockTx.get(followedUserRef)).thenReturn(followedProfileFuture);
+        when(followedProfileFuture.get()).thenReturn(followedProfile);
+        when(followedProfile.getLong("followerCount")).thenReturn(-3L);
         when(mockTx.delete(any())).thenReturn(mockTx);
         when(mockTx.set(any(), any(), any())).thenReturn(mockTx);
 
@@ -350,12 +366,12 @@ class FollowServiceTest {
         Map<?, ?> followerMap = followerMapCaptor.getValue();
         assertTrue(followerMap.containsKey("followingCount"),
                 "follower profile must have followingCount decremented");
-        assertInstanceOf(FieldValue.class, followerMap.get("followingCount"));
+        assertEquals(0L, followerMap.get("followingCount"));
 
         Map<?, ?> followedMap = followedMapCaptor.getValue();
         assertTrue(followedMap.containsKey("followerCount"),
                 "followed profile must have followerCount decremented");
-        assertInstanceOf(FieldValue.class, followedMap.get("followerCount"));
+        assertEquals(0L, followedMap.get("followerCount"));
     }
 
     @Test

@@ -61,18 +61,45 @@ public class UserProfileController {
       summary = "Get my profile",
       description = "Returns the authenticated user's complete canonical profile, including "
           + "visibility, timestamps, and derived follow counts. If no Firestore profile exists, "
-          + "Firebase Auth supplies bootstrap display-name and avatar values.")
+          + "it is safely bootstrapped; Firebase Auth supplies optional display-name and avatar "
+          + "metadata when available.")
   @ApiResponses(value = {
       @ApiResponse(
           responseCode = "200",
           description = "Canonical profile retrieved successfully",
           content = @Content(schema = @Schema(implementation = SelfUserProfileResponse.class))),
       @ApiResponse(responseCode = "401", description = "Unauthorized", content = @Content),
-      @ApiResponse(responseCode = "404", description = "User not found", content = @Content)
+      @ApiResponse(responseCode = "503", description = "Profile service unavailable",
+          content = @Content)
   })
   public ResponseEntity<SelfUserProfileResponse> getSelfProfile(
       @Parameter(hidden = true) @RequestAttribute("userId") String userId) {
     return ResponseEntity.ok(userProfileService.getSelfProfile(userId));
+  }
+
+  /**
+   * Rebuild the authenticated user's profile metadata and follow counters.
+   *
+   * @param userId Firebase UID injected by the authentication filter
+   * @return repaired owner-only canonical profile
+   */
+  @PostMapping("/me/profile/repair")
+  @SecurityRequirement(name = "Firebase Auth")
+  @Operation(
+      summary = "Repair my profile",
+      description = "Safely backfills missing canonical profile metadata and rebuilds the "
+          + "authenticated user's follower and following counts from that user's follow indexes. "
+          + "This operation is idempotent and never deletes recipes, follows, or avatar data.")
+  @ApiResponses(value = {
+      @ApiResponse(
+          responseCode = "200",
+          description = "Canonical profile repaired successfully",
+          content = @Content(schema = @Schema(implementation = SelfUserProfileResponse.class))),
+      @ApiResponse(responseCode = "401", description = "Unauthorized", content = @Content)
+  })
+  public ResponseEntity<SelfUserProfileResponse> repairSelfProfile(
+      @Parameter(hidden = true) @RequestAttribute("userId") String userId) {
+    return ResponseEntity.ok(userProfileService.repairSelfProfile(userId));
   }
 
   /**

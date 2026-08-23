@@ -5,8 +5,10 @@ import com.google.cloud.Timestamp;
 import com.google.cloud.firestore.DocumentReference;
 import com.google.cloud.firestore.DocumentSnapshot;
 import com.google.cloud.firestore.Firestore;
+import com.google.cloud.firestore.Query;
 import com.google.cloud.firestore.QuerySnapshot;
 import com.google.cloud.firestore.SetOptions;
+import com.google.cloud.firestore.Transaction;
 import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.auth.FirebaseAuthException;
 import com.google.firebase.auth.UserRecord;
@@ -37,6 +39,9 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class UserProfileService {
 
+  private static final String FOLLOWING_SUBCOLLECTION = "following";
+  private static final String FOLLOWERS_SUBCOLLECTION = "followers";
+
   @Autowired(required = false)
   private Firestore firestore;
 
@@ -54,6 +59,9 @@ public class UserProfileService {
 
   @Value("${firestore.collection.recipes}")
   private String recipesCollection;
+
+  @Value("${firestore.collection.follows}")
+  private String followsCollection;
 
   /**
    * Fetch the public profile for a given user uid.
@@ -99,14 +107,6 @@ public class UserProfileService {
         authUser = getAuthUser(uid);
       }
 
-      if (!hasFirestoreProfile) {
-        if (authUser == null) {
-          log.warn("User profile not found in Firestore or Firebase Auth: {}", uid);
-          throw new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found");
-        }
-        log.info("Firestore profile missing for user {}, falling back to Firebase Auth", uid);
-      }
-
       if ((displayName == null || displayName.isBlank()) && authUser != null) {
         displayName = authUser.getDisplayName();
       }
@@ -114,11 +114,20 @@ public class UserProfileService {
         avatarUrl = authUser.getPhotoUrl();
       }
 
-      long followerCount = rawFollowerCount != null ? rawFollowerCount : 0L;
-      long followingCount = rawFollowingCount != null ? rawFollowingCount : 0L;
-
       List<RecipeResponse> publicRecipes = fetchPublicRecipes(uid);
-      long publicRecipeCount = publicRecipes.size();
+      final long publicRecipeCount = publicRecipes.size();
+
+      if (!hasFirestoreProfile && authUser == null && publicRecipes.isEmpty()) {
+        log.warn("User profile not found in Firestore, Firebase Auth, or public recipes: {}", uid);
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found");
+      }
+
+      if (!hasFirestoreProfile) {
+        log.info("Serving fallback profile for user {} without a Firestore document", uid);
+      }
+
+      long followerCount = nonNegative(rawFollowerCount);
+      long followingCount = nonNegative(rawFollowingCount);
 
       boolean isFollowedByCurrentUser = canExposeProfileFields && currentUserId != null
           && followService != null
@@ -174,41 +183,15 @@ public class UserProfileService {
     requireFirestore();
 
     try {
-      DocumentReference userDocumentReference = firestore.collection(usersCollection).document(uid);
-      DocumentSnapshot userDocument = userDocumentReference.get().get();
-      UserProfile profile;
-
-      if (userDocument == null || !userDocument.exists()) {
-        UserRecord authUser = getAuthUser(uid);
-        if (authUser == null) {
-          throw new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found");
-        }
-
-        Instant now = Instant.now();
-        profile = UserProfile.builder()
-            .uid(uid)
-            .displayName(normalizeOptional(authUser.getDisplayName()))
-            .bio(null)
-            .avatarUrl(normalizeOptional(authUser.getPhotoUrl()))
-            .visibility(ProfileVisibility.PUBLIC)
-            .createdAt(now)
-            .updatedAt(now)
-            .followerCount(0L)
-            .followingCount(0L)
-            .build();
-        writeProfile(userDocumentReference, profile, true);
-        log.info("Bootstrapped canonical profile for authenticated user {}", uid);
-      } else {
-        profile = toUserProfile(uid, userDocument);
-      }
-
-      return toSelfResponse(profile);
+      return toSelfResponse(bootstrapOrRepairProfile(uid, getAuthUser(uid)));
     } catch (ResponseStatusException e) {
       throw e;
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
+      log.error("Profile bootstrap interrupted for authenticated user {}", uid, e);
       throw profileServiceUnavailable(e);
     } catch (ExecutionException e) {
+      log.error("Profile bootstrap failed for authenticated user {}", uid, e);
       throw profileServiceUnavailable(e);
     }
   }
@@ -231,13 +214,7 @@ public class UserProfileService {
 
       UserProfile existing = profileExists
           ? toUserProfile(uid, userDocument)
-          : UserProfile.builder()
-              .uid(uid)
-              .visibility(ProfileVisibility.PUBLIC)
-              .createdAt(now)
-              .followerCount(0L)
-              .followingCount(0L)
-              .build();
+          : bootstrapOrRepairProfile(uid, getAuthUser(uid));
 
       UserProfile updated = UserProfile.builder()
           .uid(uid)
@@ -251,13 +228,15 @@ public class UserProfileService {
           .followingCount(existing.getFollowingCount())
           .build();
 
-      writeProfile(userDocumentReference, updated, !profileExists);
+      writeProfile(userDocumentReference, updated, false);
       log.info("Updated canonical profile for authenticated user {}", uid);
       return toSelfResponse(updated);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
+      log.error("Profile update bootstrap interrupted for authenticated user {}", uid, e);
       throw profileServiceUnavailable(e);
     } catch (ExecutionException e) {
+      log.error("Profile update bootstrap failed for authenticated user {}", uid, e);
       throw profileServiceUnavailable(e);
     }
   }
@@ -291,8 +270,8 @@ public class UserProfileService {
         .visibility(ProfileVisibility.fromFirestoreValue(userDocument.getString("visibility")))
         .createdAt(createdAt == null ? null : createdAt.toDate().toInstant())
         .updatedAt(updatedAt == null ? null : updatedAt.toDate().toInstant())
-        .followerCount(followerCount == null ? 0L : followerCount)
-        .followingCount(followingCount == null ? 0L : followingCount)
+        .followerCount(nonNegative(followerCount))
+        .followingCount(nonNegative(followingCount))
         .build();
   }
 
@@ -324,8 +303,8 @@ public class UserProfileService {
         profile.getUpdatedAt().getEpochSecond(), profile.getUpdatedAt().getNano()));
 
     if (initializeCounts) {
-      fields.put("followerCount", profile.getFollowerCount());
-      fields.put("followingCount", profile.getFollowingCount());
+      fields.put("followerCount", nonNegative(profile.getFollowerCount()));
+      fields.put("followingCount", nonNegative(profile.getFollowingCount()));
     }
 
     userDocumentReference.set(fields, SetOptions.merge()).get();
@@ -336,6 +315,191 @@ public class UserProfileService {
       return null;
     }
     return value.trim();
+  }
+
+  /**
+   * Creates a canonical profile or fills only fields absent from a legacy profile document.
+   *
+   * <p>Authentication has already validated the caller's token before this method runs. Firebase
+   * Auth is therefore best-effort profile metadata only: an unavailable Auth lookup must not
+   * prevent the caller from obtaining a usable profile. The Firestore transaction makes retries
+   * and concurrent follow writes safe by preserving existing fields and derived counters.
+   */
+  private UserProfile bootstrapOrRepairProfile(String uid, UserRecord authUser)
+      throws InterruptedException, ExecutionException {
+    DocumentReference userDocumentReference = firestore.collection(usersCollection).document(uid);
+    ApiFuture<UserProfile> transactionFuture = firestore.runTransaction(transaction -> {
+      DocumentSnapshot userDocument = transaction.get(userDocumentReference).get();
+      Instant now = Instant.now();
+      UserProfile profile = repairedProfile(uid, userDocument, authUser, now);
+      Map<String, Object> repairFields = lifecycleRepairFields(userDocument, profile);
+
+      if (!repairFields.isEmpty()) {
+        transaction.set(userDocumentReference, repairFields, SetOptions.merge());
+        log.info("Bootstrapped or repaired canonical profile for user {}", uid);
+      }
+      return profile;
+    });
+    return transactionFuture.get();
+  }
+
+  /**
+   * Rebuilds the authenticated user's two denormalized follow counters from the scoped follow
+   * indexes. It reads and writes only one user's documents and never deletes relationships.
+   *
+   * @param uid authenticated Firebase UID whose profile is being repaired
+   * @return the repaired owner-only profile
+   */
+  public SelfUserProfileResponse repairSelfProfile(String uid) {
+    requireFirestore();
+
+    try {
+      UserProfile profile = bootstrapOrRepairProfile(uid, getAuthUser(uid));
+      DocumentReference userDocumentReference = firestore.collection(usersCollection).document(uid);
+      Query followingQuery = firestore.collection(followsCollection)
+          .document(uid)
+          .collection(FOLLOWING_SUBCOLLECTION);
+      Query followersQuery = firestore.collection(followsCollection)
+          .document(uid)
+          .collection(FOLLOWERS_SUBCOLLECTION);
+
+      ApiFuture<UserProfile> transactionFuture = firestore.runTransaction(transaction -> {
+        DocumentSnapshot userDocument = transaction.get(userDocumentReference).get();
+        QuerySnapshot following = transaction.get(followingQuery).get();
+        QuerySnapshot followers = transaction.get(followersQuery).get();
+        long followingCount = following.getDocuments().size();
+        long followerCount = followers.getDocuments().size();
+
+        Map<String, Object> countFields = new HashMap<>();
+        if (userDocument.getLong("followerCount") == null
+            || userDocument.getLong("followerCount") != followerCount) {
+          countFields.put("followerCount", followerCount);
+        }
+        if (userDocument.getLong("followingCount") == null
+            || userDocument.getLong("followingCount") != followingCount) {
+          countFields.put("followingCount", followingCount);
+        }
+        if (!countFields.isEmpty()) {
+          transaction.set(userDocumentReference, countFields, SetOptions.merge());
+          log.info("Reconciled follow counters for user {} (followers={}, following={})",
+              uid, followerCount, followingCount);
+        }
+
+        return UserProfile.builder()
+            .uid(profile.getUid())
+            .displayName(profile.getDisplayName())
+            .bio(profile.getBio())
+            .avatarUrl(profile.getAvatarUrl())
+            .visibility(profile.getVisibility())
+            .createdAt(profile.getCreatedAt())
+            .updatedAt(profile.getUpdatedAt())
+            .followerCount(followerCount)
+            .followingCount(followingCount)
+            .build();
+      });
+      return toSelfResponse(transactionFuture.get());
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      log.error("Profile reconciliation interrupted for authenticated user {}", uid, e);
+      throw profileServiceUnavailable(e);
+    } catch (ExecutionException e) {
+      log.error("Profile reconciliation failed for authenticated user {}", uid, e);
+      throw profileServiceUnavailable(e);
+    }
+  }
+
+  private UserProfile repairedProfile(
+      String uid, DocumentSnapshot userDocument, UserRecord authUser, Instant now) {
+    boolean profileExists = userDocument != null && userDocument.exists();
+    String persistedDisplayName = profileExists ? userDocument.getString("displayName") : null;
+    String persistedBio = profileExists ? userDocument.getString("bio") : null;
+    String persistedAvatarUrl = profileExists ? userDocument.getString("avatarUrl") : null;
+    String displayName = normalizeOptional(persistedDisplayName);
+    String avatarUrl = normalizeOptional(persistedAvatarUrl);
+
+    if (displayName == null && authUser != null) {
+      displayName = normalizeOptional(authUser.getDisplayName());
+    }
+    if (avatarUrl == null && authUser != null) {
+      avatarUrl = normalizeOptional(authUser.getPhotoUrl());
+    }
+
+    Timestamp createdAt = profileExists ? userDocument.getTimestamp("createdAt") : null;
+    Timestamp updatedAt = profileExists ? userDocument.getTimestamp("updatedAt") : null;
+    Long followerCount = profileExists ? userDocument.getLong("followerCount") : null;
+    Long followingCount = profileExists ? userDocument.getLong("followingCount") : null;
+
+    return UserProfile.builder()
+        .uid(uid)
+        .displayName(displayName)
+        .bio(normalizeOptional(persistedBio))
+        .avatarUrl(avatarUrl)
+        .visibility(profileExists
+            ? ProfileVisibility.fromFirestoreValue(userDocument.getString("visibility"))
+            : ProfileVisibility.PUBLIC)
+        .createdAt(createdAt == null ? now : createdAt.toDate().toInstant())
+        .updatedAt(updatedAt == null ? now : updatedAt.toDate().toInstant())
+        .followerCount(nonNegative(followerCount))
+        .followingCount(nonNegative(followingCount))
+        .build();
+  }
+
+  private Map<String, Object> lifecycleRepairFields(
+      DocumentSnapshot userDocument, UserProfile profile) {
+    Map<String, Object> fields = new HashMap<>();
+    boolean profileExists = userDocument != null && userDocument.exists();
+
+    if (!profileExists) {
+      fields.put("displayName", profile.getDisplayName());
+      fields.put("bio", profile.getBio());
+      fields.put("avatarUrl", profile.getAvatarUrl());
+      fields.put("visibility", profile.getVisibility().name());
+      fields.put("createdAt", toTimestamp(profile.getCreatedAt()));
+      fields.put("updatedAt", toTimestamp(profile.getUpdatedAt()));
+      fields.put("followerCount", profile.getFollowerCount());
+      fields.put("followingCount", profile.getFollowingCount());
+      return fields;
+    }
+
+    if (userDocument.getTimestamp("createdAt") == null) {
+      fields.put("createdAt", toTimestamp(profile.getCreatedAt()));
+    }
+    if (userDocument.getTimestamp("updatedAt") == null) {
+      fields.put("updatedAt", toTimestamp(profile.getUpdatedAt()));
+    }
+    if (normalizeOptional(userDocument.getString("displayName")) == null
+        && profile.getDisplayName() != null) {
+      fields.put("displayName", profile.getDisplayName());
+    }
+    if (normalizeOptional(userDocument.getString("avatarUrl")) == null
+        && profile.getAvatarUrl() != null) {
+      fields.put("avatarUrl", profile.getAvatarUrl());
+    }
+    if (userDocument.getString("visibility") == null
+        || userDocument.getString("visibility").isBlank()) {
+      fields.put("visibility", profile.getVisibility().name());
+    }
+    if (userDocument.getLong("followerCount") == null
+        || userDocument.getLong("followerCount") < 0) {
+      fields.put("followerCount", profile.getFollowerCount());
+    }
+    if (userDocument.getLong("followingCount") == null
+        || userDocument.getLong("followingCount") < 0) {
+      fields.put("followingCount", profile.getFollowingCount());
+    }
+    return fields;
+  }
+
+  private Timestamp toTimestamp(Instant instant) {
+    return Timestamp.ofTimeSecondsAndNanos(instant.getEpochSecond(), instant.getNano());
+  }
+
+  private long nonNegative(Long count) {
+    return count == null ? 0L : Math.max(0L, count);
+  }
+
+  private long nonNegative(long count) {
+    return Math.max(0L, count);
   }
 
   private ResponseStatusException profileServiceUnavailable(Exception exception) {
@@ -355,6 +519,10 @@ public class UserProfileService {
           .get();
       QuerySnapshot snapshot = future.get();
       List<RecipeResponse> recipes = new ArrayList<>();
+      if (snapshot == null) {
+        log.warn("Public recipe query returned no snapshot for user {}", uid);
+        return recipes;
+      }
       for (var doc : snapshot.getDocuments()) {
         Recipe recipe = doc.toObject(Recipe.class);
         if (recipe != null) {

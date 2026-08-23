@@ -23,6 +23,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -105,6 +106,19 @@ class SelfUserProfileControllerIntegrationTest {
                 .andExpect(jsonPath("$.followerCount").value(3));
 
         verify(userProfileService).getSelfProfile("profile-owner");
+    }
+
+    @Test
+    void repairSelfProfile_UsesAuthenticatedCaller() throws Exception {
+        when(userProfileService.repairSelfProfile("profile-owner"))
+                .thenReturn(profileResponse("profile-owner"));
+
+        mockMvc.perform(post("/api/users/me/profile/repair").header("userId", "profile-owner"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.uid").value("profile-owner"))
+                .andExpect(jsonPath("$.followerCount").value(3));
+
+        verify(userProfileService).repairSelfProfile("profile-owner");
     }
 
     private SelfUserProfileResponse profileResponse(String uid) {

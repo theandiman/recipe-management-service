@@ -34,7 +34,7 @@ import org.springframework.web.server.ResponseStatusException;
  * <p>Follow documents are stored at {@code follows/{followerId}/following/{followedId}}
  * and a reverse index at {@code follows/{followedId}/followers/{followerId}}.
  * Follower and following counts on user profile documents are updated atomically via
- * Firestore transactions to ensure idempotency.
+ * Firestore transactions to ensure idempotency and are never permitted to become negative.
  */
 @Slf4j
 @Service
@@ -87,6 +87,8 @@ public class FollowService {
       ApiFuture<Boolean> txFuture = firestore.runTransaction(transaction -> {
         DocumentSnapshot followDoc = transaction.get(followDocRef).get();
         if (!followDoc.exists()) {
+          DocumentSnapshot followerProfile = transaction.get(followerUserRef).get();
+          DocumentSnapshot followedProfile = transaction.get(followedUserRef).get();
           DocumentReference reverseFollowDocRef = firestore.collection(followsCollection)
               .document(followedId)
               .collection(FOLLOWERS_SUBCOLLECTION)
@@ -96,9 +98,11 @@ public class FollowService {
           transaction.set(reverseFollowDocRef,
               Map.of("followedAt", FieldValue.serverTimestamp()));
           transaction.set(followerUserRef,
-              Map.of("followingCount", FieldValue.increment(1)), SetOptions.merge());
+              Map.of("followingCount", incrementCounter(followerProfile, "followingCount")),
+              SetOptions.merge());
           transaction.set(followedUserRef,
-              Map.of("followerCount", FieldValue.increment(1)), SetOptions.merge());
+              Map.of("followerCount", incrementCounter(followedProfile, "followerCount")),
+              SetOptions.merge());
           return true;
         }
         return false;
@@ -155,6 +159,8 @@ public class FollowService {
       ApiFuture<Boolean> txFuture = firestore.runTransaction(transaction -> {
         DocumentSnapshot followDoc = transaction.get(followDocRef).get();
         if (followDoc.exists()) {
+          DocumentSnapshot followerProfile = transaction.get(followerUserRef).get();
+          DocumentSnapshot followedProfile = transaction.get(followedUserRef).get();
           DocumentReference reverseFollowDocRef = firestore.collection(followsCollection)
               .document(followedId)
               .collection(FOLLOWERS_SUBCOLLECTION)
@@ -162,9 +168,11 @@ public class FollowService {
           transaction.delete(followDocRef);
           transaction.delete(reverseFollowDocRef);
           transaction.set(followerUserRef,
-              Map.of("followingCount", FieldValue.increment(-1)), SetOptions.merge());
+              Map.of("followingCount", decrementCounter(followerProfile, "followingCount")),
+              SetOptions.merge());
           transaction.set(followedUserRef,
-              Map.of("followerCount", FieldValue.increment(-1)), SetOptions.merge());
+              Map.of("followerCount", decrementCounter(followedProfile, "followerCount")),
+              SetOptions.merge());
           return true;
         }
         return false;
@@ -365,6 +373,22 @@ public class FollowService {
     } catch (Exception e) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid page token");
     }
+  }
+
+  private long incrementCounter(DocumentSnapshot profile, String field) {
+    return nonNegativeCounter(profile, field) + 1L;
+  }
+
+  private long decrementCounter(DocumentSnapshot profile, String field) {
+    return Math.max(0L, nonNegativeCounter(profile, field) - 1L);
+  }
+
+  private long nonNegativeCounter(DocumentSnapshot profile, String field) {
+    if (profile == null) {
+      return 0L;
+    }
+    Long value = profile.getLong(field);
+    return value == null ? 0L : Math.max(0L, value);
   }
 
   private String encodeFollowPageToken(QuerySnapshot snapshot) {
