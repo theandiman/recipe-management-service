@@ -100,11 +100,13 @@ public class FirebaseAuthenticationFilter extends OncePerRequestFilter {
       // Skip auth for public followers/following list endpoints (read-only methods only)
       if (path.matches("/api/users/[^/]+/followers")
           && ("GET".equals(method) || "HEAD".equals(method))) {
+        trySetOptionalUserId(request);
         filterChain.doFilter(request, response);
         return;
       }
       if (path.matches("/api/users/[^/]+/following")
           && ("GET".equals(method) || "HEAD".equals(method))) {
+        trySetOptionalUserId(request);
         filterChain.doFilter(request, response);
         return;
       }
