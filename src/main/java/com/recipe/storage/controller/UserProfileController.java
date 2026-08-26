@@ -259,6 +259,41 @@ public class UserProfileController {
   }
 
   /**
+   * Reconciles profile count statistics for the specified user.
+   * Requires caller to be the profile owner.
+   *
+   * @param uid           Firebase UID of the user whose counts to reconcile
+   * @param currentUserId caller's Firebase UID from authentication filter
+   * @return reconciled UserProfileResponse
+   */
+  @PostMapping("/{uid}/reconcile")
+  @Operation(
+      summary = "Reconcile profile count statistics",
+      description = "Recalculates actual followerCount, followingCount, and publicRecipeCount "
+          + "from stored records and updates the profile document. Requires authentication.")
+  @ApiResponses(value = {
+      @ApiResponse(
+          responseCode = "200",
+          description = "Profile counts reconciled successfully",
+          content = @Content(schema = @Schema(implementation = UserProfileResponse.class))),
+      @ApiResponse(responseCode = "401", description = "Unauthorized", content = @Content),
+      @ApiResponse(responseCode = "403",
+          description = "Forbidden: Cannot reconcile another user's profile", content = @Content)
+  })
+  public ResponseEntity<UserProfileResponse> reconcileProfile(
+      @Parameter(description = "User Firebase UID", required = true) @PathVariable String uid,
+      @Parameter(hidden = true) @RequestAttribute("userId") String currentUserId) {
+
+    if (!currentUserId.equals(uid)) {
+      throw new ResponseStatusException(
+          HttpStatus.FORBIDDEN, "Cannot reconcile another user's profile");
+    }
+
+    UserProfileResponse response = userProfileService.reconcileProfileCounts(uid);
+    return ResponseEntity.ok(response);
+  }
+
+  /**
    * Get a paginated list of users following the specified user.
    * Does NOT require authentication.
    *
