@@ -63,7 +63,7 @@ public class UserProfileService {
    *     503 if Firestore is not configured or unavailable
    */
   public UserProfileResponse getUserProfile(String uid, String currentUserId) {
-    if (firestore == null) {
+    if (firestore == null || firestore.collection(usersCollection) == null) {
       log.warn("Firestore not configured - cannot fetch user profile");
       throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
           "User profile service unavailable");
@@ -128,21 +128,27 @@ public class UserProfileService {
       long followerCount = rawFollowerCount != null ? rawFollowerCount : 0L;
       long followingCount = rawFollowingCount != null ? rawFollowingCount : 0L;
 
-      List<RecipeResponse> publicRecipes = fetchPublicRecipes(uid);
-      long publicRecipeCount = publicRecipes.size();
-
+      boolean isOwner = currentUserId != null && currentUserId.equals(uid);
       boolean isFollowedByCurrentUser = currentUserId != null
           && followService != null
           && followService.isFollowing(currentUserId, uid);
 
-      log.info("Retrieved public profile for user {} (publicRecipeCount={}, followerCount={}, "
-              + "followingCount={}, isFollowedByCurrentUser={})",
-          uid, publicRecipeCount, followerCount, followingCount, isFollowedByCurrentUser);
+      boolean isPrivate = "PRIVATE".equalsIgnoreCase(visibility);
+      boolean canAccessPrivateData = !isPrivate || isOwner || isFollowedByCurrentUser;
+
+      String finalBio = canAccessPrivateData ? bio : null;
+      List<RecipeResponse> publicRecipes = canAccessPrivateData
+          ? fetchPublicRecipes(uid)
+          : new ArrayList<>();
+      long publicRecipeCount = publicRecipes.size();
+
+      log.info("Retrieved profile for user {} (visibility={}, canAccessPrivateData={})",
+          uid, visibility, canAccessPrivateData);
 
       return UserProfileResponse.builder()
           .uid(uid)
           .displayName(displayName)
-          .bio(bio)
+          .bio(finalBio)
           .avatarUrl(avatarUrl)
           .visibility(visibility)
           .publicRecipeCount(publicRecipeCount)
@@ -222,7 +228,7 @@ public class UserProfileService {
    * @return The updated user profile response
    */
   public UserProfileResponse updateUserProfile(String uid, UpdateUserProfileRequest request) {
-    if (firestore == null) {
+    if (firestore == null || firestore.collection(usersCollection) == null) {
       log.warn("Firestore not configured - cannot update user profile");
       throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
           "User profile service unavailable");

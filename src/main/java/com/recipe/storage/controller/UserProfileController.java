@@ -286,11 +286,25 @@ public class UserProfileController {
       @Parameter(description = "Cursor token from a previous response (omit for first page)")
       @RequestParam(name = "pageToken", required = false) String pageToken,
       @Parameter(description = "Page size (default: 20, min: 1, max: 100)")
-      @RequestParam(name = "pageSize", defaultValue = "20") @Min(1) @Max(100) int pageSize) {
+      @RequestParam(name = "pageSize", defaultValue = "20") @Min(1) @Max(100) int pageSize,
+      @Parameter(hidden = true)
+      @RequestAttribute(name = "userId", required = false) String currentUserId) {
 
     MDC.put("user.profile.uid", uid);
     try {
       log.info("Fetching followers for user {}", uid);
+      try {
+        UserProfileResponse profile = userProfileService.getUserProfile(uid, currentUserId);
+        boolean isOwner = currentUserId != null && currentUserId.equals(uid);
+        if ("PRIVATE".equalsIgnoreCase(profile.getVisibility())
+            && !isOwner && !profile.isFollowedByCurrentUser()) {
+          throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Followers list is private");
+        }
+      } catch (ResponseStatusException e) {
+        if (e.getStatusCode() == HttpStatus.FORBIDDEN) {
+          throw e;
+        }
+      }
       PagedFollowResponse response = followService.getFollowers(uid, pageToken, pageSize);
       return ResponseEntity.ok(response);
     } finally {
@@ -305,6 +319,7 @@ public class UserProfileController {
    * @param uid       the Firebase UID of the user whose following list to retrieve
    * @param pageToken opaque cursor token from a previous response (null for first page)
    * @param pageSize  maximum number of users per page (default 20, min 1, max 100)
+   * @param currentUserId caller's Firebase UID if authenticated
    * @return paginated list of followed users
    */
   @GetMapping("/{uid}/following")
@@ -319,6 +334,8 @@ public class UserProfileController {
           description = "Following list retrieved successfully",
           content = @Content(schema = @Schema(implementation = PagedFollowResponse.class))),
       @ApiResponse(responseCode = "400", description = "Invalid pageSize or pageToken",
+          content = @Content),
+      @ApiResponse(responseCode = "403", description = "Forbidden: Profile is private",
           content = @Content)
   })
   public ResponseEntity<PagedFollowResponse> getFollowing(
@@ -326,11 +343,25 @@ public class UserProfileController {
       @Parameter(description = "Cursor token from a previous response (omit for first page)")
       @RequestParam(name = "pageToken", required = false) String pageToken,
       @Parameter(description = "Page size (default: 20, min: 1, max: 100)")
-      @RequestParam(name = "pageSize", defaultValue = "20") @Min(1) @Max(100) int pageSize) {
+      @RequestParam(name = "pageSize", defaultValue = "20") @Min(1) @Max(100) int pageSize,
+      @Parameter(hidden = true)
+      @RequestAttribute(name = "userId", required = false) String currentUserId) {
 
     MDC.put("user.profile.uid", uid);
     try {
       log.info("Fetching following list for user {}", uid);
+      try {
+        UserProfileResponse profile = userProfileService.getUserProfile(uid, currentUserId);
+        boolean isOwner = currentUserId != null && currentUserId.equals(uid);
+        if ("PRIVATE".equalsIgnoreCase(profile.getVisibility())
+            && !isOwner && !profile.isFollowedByCurrentUser()) {
+          throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Following list is private");
+        }
+      } catch (ResponseStatusException e) {
+        if (e.getStatusCode() == HttpStatus.FORBIDDEN) {
+          throw e;
+        }
+      }
       PagedFollowResponse response = followService.getFollowing(uid, pageToken, pageSize);
       return ResponseEntity.ok(response);
     } finally {
