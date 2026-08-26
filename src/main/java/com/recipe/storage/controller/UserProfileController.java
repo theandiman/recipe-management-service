@@ -1,6 +1,7 @@
 package com.recipe.storage.controller;
 
 import com.recipe.storage.dto.PagedFollowResponse;
+import com.recipe.storage.dto.UpdateUserProfileRequest;
 import com.recipe.storage.dto.UserProfileResponse;
 import com.recipe.storage.service.FollowService;
 import com.recipe.storage.service.UserProfileService;
@@ -13,21 +14,26 @@ import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.security.SecurityRequirements;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestAttribute;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ResponseStatusException;
 
 /**
  * REST controller for public user profile operations.
@@ -81,6 +87,111 @@ public class UserProfileController {
     } finally {
       MDC.remove("user.profile.uid");
     }
+  }
+
+  /**
+   * Get the authenticated caller's own profile.
+   * Requires Firebase authentication.
+   *
+   * @param currentUserId The authenticated caller's Firebase UID
+   * @return The authenticated user's profile
+   */
+  @GetMapping("/me/profile")
+  @SecurityRequirement(name = "Firebase Auth")
+  @Operation(
+      summary = "Get authenticated user profile",
+      description = "Retrieves the profile of the currently authenticated caller.")
+  @ApiResponses(value = {
+      @ApiResponse(responseCode = "200", description = "Profile retrieved successfully",
+          content = @Content(schema = @Schema(implementation = UserProfileResponse.class))),
+      @ApiResponse(responseCode = "401", description = "Unauthorized", content = @Content)
+  })
+  public ResponseEntity<UserProfileResponse> getMyProfile(
+      @Parameter(hidden = true)
+      @RequestAttribute(name = "userId", required = false) String currentUserId) {
+
+    if (currentUserId == null || currentUserId.isBlank()) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Authentication required");
+    }
+    log.info("Fetching self-profile for authenticated user {}", currentUserId);
+    return ResponseEntity.ok(userProfileService.getUserProfile(currentUserId, currentUserId));
+  }
+
+  /**
+   * Update the authenticated caller's profile.
+   * Requires Firebase authentication.
+   *
+   * @param currentUserId The authenticated caller's Firebase UID
+   * @param request       The profile fields to update
+   * @return The updated user profile
+   */
+  @PutMapping("/me/profile")
+  @SecurityRequirement(name = "Firebase Auth")
+  @Operation(
+      summary = "Update authenticated user profile",
+      description = "Updates editable profile fields (displayName, bio, avatarUrl, visibility) "
+          + "for the currently authenticated caller.")
+  @ApiResponses(value = {
+      @ApiResponse(responseCode = "200", description = "Profile updated successfully",
+          content = @Content(schema = @Schema(implementation = UserProfileResponse.class))),
+      @ApiResponse(responseCode = "400", description = "Invalid request payload",
+          content = @Content),
+      @ApiResponse(responseCode = "401", description = "Unauthorized", content = @Content)
+  })
+  public ResponseEntity<UserProfileResponse> updateMyProfile(
+      @Parameter(hidden = true)
+      @RequestAttribute(name = "userId", required = false) String currentUserId,
+      @Valid @RequestBody UpdateUserProfileRequest request) {
+
+    if (currentUserId == null || currentUserId.isBlank()) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Authentication required");
+    }
+    log.info("Updating self-profile for user {}", currentUserId);
+    UserProfileResponse updated = userProfileService.updateUserProfile(currentUserId, request);
+    return ResponseEntity.ok(updated);
+  }
+
+  /**
+   * Update a user profile by UID.
+   * Requires Firebase authentication and caller UID matching path UID.
+   *
+   * @param uid           The user UID to update
+   * @param currentUserId The authenticated caller's Firebase UID
+   * @param request       The profile fields to update
+   * @return The updated user profile
+   */
+  @PutMapping("/{uid}/profile")
+  @SecurityRequirement(name = "Firebase Auth")
+  @Operation(
+      summary = "Update user profile",
+      description = "Updates profile fields for the user matching path uid. "
+          + "Only permitted if the caller is the owner of the profile.")
+  @ApiResponses(value = {
+      @ApiResponse(responseCode = "200", description = "Profile updated successfully",
+          content = @Content(schema = @Schema(implementation = UserProfileResponse.class))),
+      @ApiResponse(responseCode = "400", description = "Invalid request payload",
+          content = @Content),
+      @ApiResponse(responseCode = "401", description = "Unauthorized", content = @Content),
+      @ApiResponse(responseCode = "403", description = "Forbidden: Cannot modify another profile",
+          content = @Content)
+  })
+  public ResponseEntity<UserProfileResponse> updateUserProfile(
+      @Parameter(description = "User Firebase UID", required = true) @PathVariable String uid,
+      @Parameter(hidden = true)
+      @RequestAttribute(name = "userId", required = false) String currentUserId,
+      @Valid @RequestBody UpdateUserProfileRequest request) {
+
+    if (currentUserId == null || currentUserId.isBlank()) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Authentication required");
+    }
+    if (!currentUserId.equals(uid)) {
+      log.warn("User {} attempted to modify profile of user {}", currentUserId, uid);
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+          "Cannot modify another user's profile");
+    }
+    log.info("User {} updating profile for user {}", currentUserId, uid);
+    UserProfileResponse updated = userProfileService.updateUserProfile(uid, request);
+    return ResponseEntity.ok(updated);
   }
 
   /**
