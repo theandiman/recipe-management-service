@@ -507,4 +507,13 @@ class UserProfileServiceTest {
         assertNotNull(response.getPublicRecipes());
         assertTrue(response.getPublicRecipes().isEmpty());
     }
+
+    @Test
+    void reconcileProfileCounts_NullFirestore_Throws503() {
+        UserProfileService serviceWithoutFirestore = new UserProfileService();
+        ResponseStatusException exception = assertThrows(
+                ResponseStatusException.class,
+                () -> serviceWithoutFirestore.reconcileProfileCounts("uid123"));
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, exception.getStatusCode());
+    }
 }

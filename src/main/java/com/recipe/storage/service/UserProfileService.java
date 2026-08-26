@@ -116,7 +116,27 @@ public class UserProfileService {
           log.warn("User profile not found in Firestore or Firebase Auth: {}", uid);
           throw new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found");
         }
-        log.info("Firestore profile missing for user {}, falling back to Firebase Auth", uid);
+        log.info("Firestore profile missing for user {}, bootstrapping default document", uid);
+        try {
+          String now = Instant.now().toString();
+          Map<String, Object> bootstrapDoc = new HashMap<>();
+          bootstrapDoc.put("displayName", authUser.getDisplayName() != null
+              ? authUser.getDisplayName() : "User");
+          bootstrapDoc.put("visibility", "PUBLIC");
+          bootstrapDoc.put("followerCount", 0L);
+          bootstrapDoc.put("followingCount", 0L);
+          bootstrapDoc.put("publicRecipeCount", 0L);
+          bootstrapDoc.put("createdAt", now);
+          bootstrapDoc.put("updatedAt", now);
+          if (authUser.getPhotoUrl() != null && !authUser.getPhotoUrl().isBlank()) {
+            bootstrapDoc.put("avatarUrl", authUser.getPhotoUrl());
+          }
+          userDocRef.set(bootstrapDoc, SetOptions.merge());
+          createdAt = now;
+          updatedAt = now;
+        } catch (Exception e) {
+          log.warn("Failed to bootstrap Firestore profile for user {}: {}", uid, e.getMessage());
+        }
       }
 
       if ((displayName == null || displayName.isBlank()) && authUser != null) {
@@ -295,6 +315,63 @@ public class UserProfileService {
           HttpStatus.SERVICE_UNAVAILABLE, "User profile service unavailable", e);
     } catch (ExecutionException e) {
       log.error("Error updating user profile in Firestore", e);
+      throw new ResponseStatusException(
+          HttpStatus.SERVICE_UNAVAILABLE, "User profile service unavailable", e);
+    }
+  }
+
+  /**
+   * Reconciles profile count statistics against actual database records.
+   *
+   * @param uid target user ID
+   * @return reconciled UserProfileResponse
+   */
+  public UserProfileResponse reconcileProfileCounts(String uid) {
+    if (firestore == null || firestore.collection(usersCollection) == null) {
+      throw new ResponseStatusException(
+          HttpStatus.SERVICE_UNAVAILABLE, "User profile service unavailable");
+    }
+
+    try {
+      long actualFollowers = firestore.collection("follows")
+          .whereEqualTo("followedUid", uid)
+          .get()
+          .get()
+          .size();
+
+      long actualFollowing = firestore.collection("follows")
+          .whereEqualTo("followerUid", uid)
+          .get()
+          .get()
+          .size();
+
+      long actualPublicRecipes = firestore.collection("recipes")
+          .whereEqualTo("userId", uid)
+          .whereEqualTo("isPublic", true)
+          .get()
+          .get()
+          .size();
+
+      String now = Instant.now().toString();
+      Map<String, Object> updates = new HashMap<>();
+      updates.put("followerCount", actualFollowers);
+      updates.put("followingCount", actualFollowing);
+      updates.put("publicRecipeCount", actualPublicRecipes);
+      updates.put("updatedAt", now);
+
+      final DocumentReference userDocRef = firestore.collection(usersCollection).document(uid);
+      userDocRef.set(updates, SetOptions.merge()).get();
+
+      log.info("Reconciled profile counts for user {}: followers={}, following={}, "
+              + "publicRecipes={}", uid, actualFollowers, actualFollowing, actualPublicRecipes);
+
+      return getUserProfile(uid, uid);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new ResponseStatusException(
+          HttpStatus.SERVICE_UNAVAILABLE, "User profile service unavailable", e);
+    } catch (ExecutionException e) {
+      log.error("Failed to reconcile profile counts for user {}", uid, e);
       throw new ResponseStatusException(
           HttpStatus.SERVICE_UNAVAILABLE, "User profile service unavailable", e);
     }
