@@ -5,14 +5,20 @@ import com.google.cloud.firestore.DocumentReference;
 import com.google.cloud.firestore.DocumentSnapshot;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.QuerySnapshot;
+import com.google.cloud.firestore.SetOptions;
+import com.google.cloud.firestore.WriteResult;
 import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.auth.FirebaseAuthException;
 import com.google.firebase.auth.UserRecord;
 import com.recipe.shared.model.Recipe;
 import com.recipe.storage.dto.RecipeResponse;
+import com.recipe.storage.dto.UpdateUserProfileRequest;
 import com.recipe.storage.dto.UserProfileResponse;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -73,6 +79,9 @@ public class UserProfileService {
       String displayName = null;
       final String bio;
       String avatarUrl = null;
+      String visibility = "PUBLIC";
+      String createdAt = null;
+      String updatedAt = null;
       Long rawFollowerCount = null;
       Long rawFollowingCount = null;
 
@@ -80,6 +89,12 @@ public class UserProfileService {
         displayName = userDocument.getString("displayName");
         bio = userDocument.getString("bio");
         avatarUrl = userDocument.getString("avatarUrl");
+        String vis = userDocument.getString("visibility");
+        if (vis != null && !vis.isBlank()) {
+          visibility = vis;
+        }
+        createdAt = userDocument.getString("createdAt");
+        updatedAt = userDocument.getString("updatedAt");
         rawFollowerCount = userDocument.getLong("followerCount");
         rawFollowingCount = userDocument.getLong("followingCount");
       } else {
@@ -129,11 +144,14 @@ public class UserProfileService {
           .displayName(displayName)
           .bio(bio)
           .avatarUrl(avatarUrl)
+          .visibility(visibility)
           .publicRecipeCount(publicRecipeCount)
           .publicRecipes(publicRecipes)
           .followerCount(followerCount)
           .followingCount(followingCount)
           .isFollowedByCurrentUser(isFollowedByCurrentUser)
+          .createdAt(createdAt)
+          .updatedAt(updatedAt)
           .build();
     } catch (ResponseStatusException e) {
       throw e;
@@ -195,4 +213,68 @@ public class UserProfileService {
       return null;
     }
   }
+
+  /**
+   * Update the profile for a given user uid.
+   *
+   * @param uid     The Firebase user ID of the profile to update
+   * @param request The updated profile fields
+   * @return The updated user profile response
+   */
+  public UserProfileResponse updateUserProfile(String uid, UpdateUserProfileRequest request) {
+    if (firestore == null) {
+      log.warn("Firestore not configured - cannot update user profile");
+      throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+          "User profile service unavailable");
+    }
+
+    try {
+      Map<String, Object> updates = new HashMap<>();
+
+      if (request.getDisplayName() != null) {
+        updates.put("displayName", request.getDisplayName().trim());
+      }
+      if (request.getBio() != null) {
+        updates.put("bio", request.getBio().trim());
+      }
+      if (request.getAvatarUrl() != null) {
+        updates.put("avatarUrl", request.getAvatarUrl().trim());
+      }
+      if (request.getVisibility() != null) {
+        updates.put("visibility", request.getVisibility());
+      }
+
+      String now = Instant.now().toString();
+      updates.put("updatedAt", now);
+
+      final DocumentReference userDocRef = firestore.collection(usersCollection).document(uid);
+      ApiFuture<WriteResult> writeFuture = userDocRef.set(updates, SetOptions.merge());
+      writeFuture.get();
+
+      boolean hasDisplayName = request.getDisplayName() != null
+          && !request.getDisplayName().isBlank();
+      if (firebaseAuth != null && hasDisplayName) {
+        try {
+          UserRecord.UpdateRequest authUpdate = new UserRecord.UpdateRequest(uid)
+              .setDisplayName(request.getDisplayName().trim());
+          firebaseAuth.updateUser(authUpdate);
+        } catch (FirebaseAuthException e) {
+          log.warn("Failed to sync displayName to Auth for user {}: {}", uid, e.getMessage());
+        }
+      }
+
+      log.info("Updated profile for user {}", uid);
+      return getUserProfile(uid, uid);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      log.error("Interrupted while updating user profile in Firestore", e);
+      throw new ResponseStatusException(
+          HttpStatus.SERVICE_UNAVAILABLE, "User profile service unavailable", e);
+    } catch (ExecutionException e) {
+      log.error("Error updating user profile in Firestore", e);
+      throw new ResponseStatusException(
+          HttpStatus.SERVICE_UNAVAILABLE, "User profile service unavailable", e);
+    }
+  }
 }
+
