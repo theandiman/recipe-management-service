@@ -3,6 +3,7 @@ package com.recipe.storage.service;
 import com.google.api.core.ApiFuture;
 import com.google.cloud.firestore.DocumentReference;
 import com.google.cloud.firestore.DocumentSnapshot;
+import com.google.cloud.firestore.FieldValue;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.QuerySnapshot;
 import com.google.cloud.firestore.SetOptions;
@@ -244,7 +245,12 @@ public class UserProfileService {
         updates.put("bio", request.getBio().trim());
       }
       if (request.getAvatarUrl() != null) {
-        updates.put("avatarUrl", request.getAvatarUrl().trim());
+        String avatar = request.getAvatarUrl().trim();
+        if (avatar.isEmpty()) {
+          updates.put("avatarUrl", FieldValue.delete());
+        } else {
+          updates.put("avatarUrl", avatar);
+        }
       }
       if (request.getVisibility() != null) {
         updates.put("visibility", request.getVisibility());
@@ -259,13 +265,24 @@ public class UserProfileService {
 
       boolean hasDisplayName = request.getDisplayName() != null
           && !request.getDisplayName().isBlank();
-      if (firebaseAuth != null && hasDisplayName) {
+      if (firebaseAuth != null) {
         try {
-          UserRecord.UpdateRequest authUpdate = new UserRecord.UpdateRequest(uid)
-              .setDisplayName(request.getDisplayName().trim());
-          firebaseAuth.updateUser(authUpdate);
+          UserRecord.UpdateRequest authUpdate = new UserRecord.UpdateRequest(uid);
+          boolean hasAuthUpdate = false;
+          if (hasDisplayName) {
+            authUpdate.setDisplayName(request.getDisplayName().trim());
+            hasAuthUpdate = true;
+          }
+          if (request.getAvatarUrl() != null) {
+            String avatar = request.getAvatarUrl().trim();
+            authUpdate.setPhotoUrl(avatar.isEmpty() ? null : avatar);
+            hasAuthUpdate = true;
+          }
+          if (hasAuthUpdate) {
+            firebaseAuth.updateUser(authUpdate);
+          }
         } catch (FirebaseAuthException e) {
-          log.warn("Failed to sync displayName to Auth for user {}: {}", uid, e.getMessage());
+          log.warn("Failed to sync profile updates to Auth for user {}: {}", uid, e.getMessage());
         }
       }
 
