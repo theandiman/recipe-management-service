@@ -15,13 +15,12 @@ concurrency:
 jobs:
   ci:
     name: Build and Test
-    uses: theandiman/recipe-management/.github/workflows/backend-java-ci.yml@c1380eefe2a455912b57e310bf6453a156c55af2
+    uses: theandiman/recipe-management/.github/workflows/backend-java-ci.yml@main
     permissions:
       contents: read
       actions: write
       packages: read
     with:
-      version_strategy: version-script
       run_sonar: true
       sonar_project_key: theandiman_recipe-management-storage-service
     secrets:
@@ -31,7 +30,7 @@ jobs:
     name: Deploy
     needs: ci
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    uses: theandiman/recipe-management/.github/workflows/backend-java-cloud-run-cd.yml@c1380eefe2a455912b57e310bf6453a156c55af2
+    uses: theandiman/recipe-management/.github/workflows/backend-java-cloud-run-cd.yml@main
     permissions:
       contents: write
       actions: write
@@ -45,4 +44,3 @@ jobs:
       GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
       GCP_DEPLOY_SA: ${{ secrets.GCP_DEPLOY_SA }}
-      GIT_PAT: ${{ secrets.GIT_PAT }}
