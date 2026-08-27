@@ -23,7 +23,20 @@
         <spring-cloud.version>2023.0.3</spring-cloud.version>
         <firebase-admin.version>9.10.0</firebase-admin.version>
         <lombok.version>1.18.46</lombok.version>
+        <testcontainers.version>1.20.6</testcontainers.version>
     </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-bom</artifactId>
+                <version>${testcontainers.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
          
     <repositories>
          <repository>
@@ -118,6 +131,16 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-restclient</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>gcloud</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>
