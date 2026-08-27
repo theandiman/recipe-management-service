@@ -7,7 +7,6 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
-# Cancel in-progress builds for non-main branches (allow concurrent builds only on main)
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
@@ -23,8 +22,7 @@ jobs:
     with:
       run_sonar: true
       sonar_project_key: theandiman_recipe-management-storage-service
-    secrets:
-      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    secrets: inherit
 
   cd:
     name: Deploy
@@ -40,7 +38,4 @@ jobs:
       artifact_registry_repository: recipe-management
       use_wif: true
       zap_rules: "10049\tIGNORE\t(Non-Storable Content - expected for auth-protected endpoints returning 401)"
-    secrets:
-      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-      GCP_DEPLOY_SA: ${{ secrets.GCP_DEPLOY_SA }}
+    secrets: inherit
