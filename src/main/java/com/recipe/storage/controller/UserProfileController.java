@@ -403,40 +403,4 @@ public class UserProfileController {
       MDC.remove("user.profile.uid");
     }
   }
-
-  /**
-   * Search public user profiles.
-   */
-  @GetMapping("/search")
-  @SecurityRequirements({})
-  @Operation(summary = "Search public user profiles")
-  public ResponseEntity<com.recipe.storage.dto.PagedUserSearchResponse> searchUsers(
-      @RequestParam(name = "q", defaultValue = "") String q,
-      @RequestParam(name = "pageToken", required = false) String pageToken,
-      @RequestParam(name = "pageSize", defaultValue = "20") @Min(1) @Max(100) int pageSize,
-      @Parameter(hidden = true)
-      @RequestAttribute(name = "userId", required = false) String currentUserId) {
-
-    log.info("Searching users with query '{}'", q);
-    com.recipe.storage.dto.PagedUserSearchResponse response =
-        userProfileService.searchUsers(q, pageToken, pageSize, currentUserId);
-    return ResponseEntity.ok(response);
-  }
-
-  /**
-   * Get featured top creators.
-   */
-  @GetMapping("/featured")
-  @SecurityRequirements({})
-  @Operation(summary = "Get featured top creators")
-  public ResponseEntity<com.recipe.storage.dto.FeaturedCreatorsResponse> getFeaturedCreators(
-      @RequestParam(name = "limit", defaultValue = "10") @Min(1) @Max(50) int limit,
-      @Parameter(hidden = true)
-      @RequestAttribute(name = "userId", required = false) String currentUserId) {
-
-    log.info("Fetching featured creators (limit={})", limit);
-    com.recipe.storage.dto.FeaturedCreatorsResponse response =
-        userProfileService.getFeaturedCreators(limit, currentUserId);
-    return ResponseEntity.ok(response);
-  }
 }
