@@ -139,6 +139,17 @@ else
     TESTS_FAILED=$((TESTS_FAILED + 1))
 fi
 
+# Test 6: Profile endpoint without auth (should return 401)
+echo -n "Testing: User profile me endpoint without auth... "
+status_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 10 "$SERVICE_URL/api/users/me/profile")
+if [ "$status_code" = "401" ] || [ "$status_code" = "403" ]; then
+    echo -e "${GREEN}✓ PASSED${NC} (HTTP $status_code)"
+    TESTS_PASSED=$((TESTS_PASSED + 1))
+else
+    echo -e "${RED}✗ FAILED${NC} (Expected HTTP 401 or 403, got HTTP $status_code)"
+    TESTS_FAILED=$((TESTS_FAILED + 1))
+fi
+
 # ==============================================================================
 # CRUD Lifecycle Test (Smoke Test)
 # Requires jq for parsing JSON response to get ID
