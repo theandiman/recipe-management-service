@@ -9,3 +9,6 @@
 - **Wait for PR Status Checks**: Run `gh pr checks <pr>` and confirm all CI status checks pass green before merging.
 - **MANDATORY PR Comment Inspection & Resolution Before Merging**: BEFORE attempting to merge any PR, you MUST execute `gh pr view <pr> --comments` AND `gh api repos/:owner/:repo/pulls/:pr/comments`. Read and address all review feedback and bot comments (such as `gemini-code-assist`). Commit fixes, push to the PR branch, wait for CI status checks to pass green again, and re-verify comments before completing the merge.
 - **Never Use `--admin` Flag for Merging**: Always merge via standard `gh pr merge --squash --delete-branch` WITHOUT `--admin` so GitHub branch protection rules, status checks, and review requirements are strictly enforced. Delete local branches and pull `main`.
+
+## 2. Verification & Build
+- Verify code with `mvn clean verify` prior to submitting PRs.
