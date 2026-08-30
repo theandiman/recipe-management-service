@@ -104,7 +104,11 @@ public class CommentService {
       }
 
       return mapToResponse(data);
-    } catch (InterruptedException | ExecutionException e) {
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      log.error("Error creating comment for recipe {}", recipeId, e);
+      throw new RuntimeException("Failed to create comment", e);
+    } catch (ExecutionException e) {
       log.error("Error creating comment for recipe {}", recipeId, e);
       throw new RuntimeException("Failed to create comment", e);
     }

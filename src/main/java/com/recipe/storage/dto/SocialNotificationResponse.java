@@ -1,5 +1,6 @@
 package com.recipe.storage.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -25,6 +26,8 @@ public class SocialNotificationResponse {
   private String targetRecipeId;
   private String targetRecipeName;
   private String contentSnippet;
+
+  @JsonProperty("isRead")
   private Boolean isRead;
   private String createdAt;
 }
