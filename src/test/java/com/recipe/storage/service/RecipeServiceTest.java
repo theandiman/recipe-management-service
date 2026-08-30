@@ -120,6 +120,31 @@ class RecipeServiceTest {
         }
 
         @Test
+        void saveRecipe_PreservesAll5TipCategories() {
+                RecipeService serviceWithoutFirestore = new RecipeService();
+                ReflectionTestUtils.setField(serviceWithoutFirestore, "recipesCollection", "recipes");
+                CreateRecipeRequest request = createValidRequest();
+                request.setTips(Map.of(
+                        "substitutions", List.of("Sub almond milk for soy milk"),
+                        "variations", List.of("Add dark chocolate chips"),
+                        "storage", List.of("Keep in airtight container up to 5 days"),
+                        "makeAhead", List.of("Bake dough up to 24 hours ahead"),
+                        "reheating", List.of("Warm in oven at 350F for 5 mins")
+                ));
+                String userId = "user123";
+
+                RecipeResponse response = serviceWithoutFirestore.saveRecipe(request, userId);
+
+                assertNotNull(response);
+                assertNotNull(response.getTips());
+                assertEquals(List.of("Sub almond milk for soy milk"), response.getTips().get("substitutions"));
+                assertEquals(List.of("Add dark chocolate chips"), response.getTips().get("variations"));
+                assertEquals(List.of("Keep in airtight container up to 5 days"), response.getTips().get("storage"));
+                assertEquals(List.of("Bake dough up to 24 hours ahead"), response.getTips().get("makeAhead"));
+                assertEquals(List.of("Warm in oven at 350F for 5 mins"), response.getTips().get("reheating"));
+        }
+
+        @Test
         void saveRecipe_ValidatesRequiredFields() throws ExecutionException, InterruptedException {
                 // Arrange
                 CreateRecipeRequest request = createValidRequest();
