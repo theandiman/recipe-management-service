@@ -73,16 +73,19 @@ public class FirebaseAuthenticationFilter extends OncePerRequestFilter {
         return;
       }
 
-      // Skip auth for public recipes
+      // Skip auth for public recipes. Optionally extract user ID for liked/saved status.
       if (path.equals("/api/recipes/public")) {
+        trySetOptionalUserId(request);
         filterChain.doFilter(request, response);
         return;
       }
 
-      // Skip auth for single public recipe endpoint (read-only methods only)
+      // Skip auth for single public recipe endpoint (read-only methods only).
+      // Optionally extract user ID for liked/saved status.
       String method = request.getMethod();
       if (path.matches("/api/recipes/[^/]+/public")
           && ("GET".equals(method) || "HEAD".equals(method))) {
+        trySetOptionalUserId(request);
         filterChain.doFilter(request, response);
         return;
       }
