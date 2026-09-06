@@ -389,4 +389,65 @@ class FirebaseAuthenticationFilterTest {
             verify(response, never()).sendError(anyInt(), anyString());
         }
     }
+
+    @Test
+    void doFilterInternal_PublicRecipesPath_WithValidToken_SetsUserIdAndProceeds() throws Exception {
+        // Arrange
+        ReflectionTestUtils.setField(filter, "authEnabled", true);
+        when(request.getMethod()).thenReturn("GET");
+        when(request.getRequestURI()).thenReturn("/api/recipes/public");
+        when(request.getHeader("Authorization")).thenReturn("Bearer valid-token");
+        when(firebaseToken.getUid()).thenReturn("caller456");
+
+        // Act & Assert
+        try (MockedStatic<FirebaseAuth> mockedFirebaseAuth = mockStatic(FirebaseAuth.class)) {
+            mockedFirebaseAuth.when(FirebaseAuth::getInstance).thenReturn(firebaseAuth);
+            when(firebaseAuth.verifyIdToken("valid-token")).thenReturn(firebaseToken);
+
+            filter.doFilterInternal(request, response, filterChain);
+
+            verify(request).setAttribute("userId", "caller456");
+            verify(filterChain).doFilter(request, response);
+            verify(response, never()).sendError(anyInt(), anyString());
+        }
+    }
+
+    @Test
+    void doFilterInternal_SinglePublicRecipePath_WithValidToken_SetsUserIdAndProceeds() throws Exception {
+        // Arrange
+        ReflectionTestUtils.setField(filter, "authEnabled", true);
+        when(request.getMethod()).thenReturn("GET");
+        when(request.getRequestURI()).thenReturn("/api/recipes/recipe123/public");
+        when(request.getHeader("Authorization")).thenReturn("Bearer valid-token");
+        when(firebaseToken.getUid()).thenReturn("caller456");
+
+        // Act & Assert
+        try (MockedStatic<FirebaseAuth> mockedFirebaseAuth = mockStatic(FirebaseAuth.class)) {
+            mockedFirebaseAuth.when(FirebaseAuth::getInstance).thenReturn(firebaseAuth);
+            when(firebaseAuth.verifyIdToken("valid-token")).thenReturn(firebaseToken);
+
+            filter.doFilterInternal(request, response, filterChain);
+
+            verify(request).setAttribute("userId", "caller456");
+            verify(filterChain).doFilter(request, response);
+            verify(response, never()).sendError(anyInt(), anyString());
+        }
+    }
+
+    @Test
+    void doFilterInternal_PublicRecipesPath_AuthDisabled_WithUserIdHeader_SetsUserIdAndProceeds()
+            throws ServletException, IOException {
+        // Arrange
+        ReflectionTestUtils.setField(filter, "authEnabled", false);
+        when(request.getMethod()).thenReturn("GET");
+        when(request.getRequestURI()).thenReturn("/api/recipes/public");
+        when(request.getHeader("userId")).thenReturn("caller456");
+
+        // Act
+        filter.doFilterInternal(request, response, filterChain);
+
+        // Assert
+        verify(request).setAttribute("userId", "caller456");
+        verify(filterChain).doFilter(request, response);
+    }
 }

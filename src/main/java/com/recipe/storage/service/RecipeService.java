@@ -518,34 +518,7 @@ public class RecipeService {
         recipes.add(response);
       });
 
-      if (userId != null && !recipes.isEmpty()) {
-        List<DocumentReference> likeRefs = new ArrayList<>();
-        List<DocumentReference> saveRefs = new ArrayList<>();
-        for (RecipeResponse r : recipes) {
-          likeRefs.add(firestore
-              .collection(likesCollection)
-              .document(r.getId())
-              .collection("users")
-              .document(userId));
-          saveRefs.add(firestore
-              .collection(savedRecipesCollection)
-              .document(userId)
-              .collection("recipes")
-              .document(r.getId()));
-        }
-        List<DocumentSnapshot> likeDocs = firestore
-            .getAll(likeRefs.toArray(new DocumentReference[0]))
-            .get();
-        for (int i = 0; i < likeDocs.size(); i++) {
-          recipes.get(i).setLikedByCurrentUser(likeDocs.get(i).exists());
-        }
-        List<DocumentSnapshot> saveDocs = firestore
-            .getAll(saveRefs.toArray(new DocumentReference[0]))
-            .get();
-        for (int i = 0; i < saveDocs.size(); i++) {
-          recipes.get(i).setSavedByCurrentUser(saveDocs.get(i).exists());
-        }
-      }
+      populateLikeAndSaveStatuses(recipes, userId);
 
       String nextPageToken = encodeNextPageToken(querySnapshot);
       log.info("Found {} public recipes (size={}, total={})",
@@ -656,23 +629,7 @@ public class RecipeService {
         recipes.add(response);
       }
 
-      // Batch-check like status for all feed recipes
-      if (!recipes.isEmpty()) {
-        List<DocumentReference> likeRefs = new ArrayList<>();
-        for (RecipeResponse r : recipes) {
-          likeRefs.add(firestore
-              .collection(likesCollection)
-              .document(r.getId())
-              .collection("users")
-              .document(userId));
-        }
-        List<DocumentSnapshot> likeDocs = firestore
-            .getAll(likeRefs.toArray(new DocumentReference[0]))
-            .get();
-        for (int i = 0; i < likeDocs.size(); i++) {
-          recipes.get(i).setLikedByCurrentUser(likeDocs.get(i).exists());
-        }
-      }
+      populateLikeAndSaveStatuses(recipes, userId);
 
       String nextPageToken = null;
       if (hasNextPage && !page.isEmpty()) {
@@ -1358,27 +1315,12 @@ public class RecipeService {
       return false;
     }
     try {
-      var likesCol = firestore.collection(likesCollection);
-      if (likesCol == null) {
-        return false;
-      }
-      var recipeDoc = likesCol.document(recipeId);
-      if (recipeDoc == null) {
-        return false;
-      }
-      var usersCol = recipeDoc.collection("users");
-      if (usersCol == null) {
-        return false;
-      }
-      var userDoc = usersCol.document(userId);
-      if (userDoc == null) {
-        return false;
-      }
-      var future = userDoc.get();
-      if (future == null) {
-        return false;
-      }
-      DocumentSnapshot doc = future.get();
+      DocumentSnapshot doc = firestore
+          .collection(likesCollection)
+          .document(recipeId)
+          .collection("users")
+          .document(userId)
+          .get().get();
       return doc != null && doc.exists();
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
@@ -1419,27 +1361,12 @@ public class RecipeService {
       return false;
     }
     try {
-      var savedCol = firestore.collection(savedRecipesCollection);
-      if (savedCol == null) {
-        return false;
-      }
-      var userDoc = savedCol.document(userId);
-      if (userDoc == null) {
-        return false;
-      }
-      var recipesCol = userDoc.collection("recipes");
-      if (recipesCol == null) {
-        return false;
-      }
-      var recipeDoc = recipesCol.document(recipeId);
-      if (recipeDoc == null) {
-        return false;
-      }
-      var future = recipeDoc.get();
-      if (future == null) {
-        return false;
-      }
-      DocumentSnapshot doc = future.get();
+      DocumentSnapshot doc = firestore
+          .collection(savedRecipesCollection)
+          .document(userId)
+          .collection("recipes")
+          .document(recipeId)
+          .get().get();
       return doc != null && doc.exists();
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
@@ -1450,6 +1377,55 @@ public class RecipeService {
       log.warn("Failed to check saved status for recipe {} user {}: {}",
           recipeId, userId, e.getMessage());
       return false;
+    }
+  }
+
+  /**
+   * Batch-check and populate liked and saved statuses for a list of recipes.
+   *
+   * @param recipes The list of recipe responses to populate
+   * @param userId The Firebase UID of the current user
+   */
+  private void populateLikeAndSaveStatuses(List<RecipeResponse> recipes, String userId) {
+    if (firestore == null || userId == null || recipes == null || recipes.isEmpty()) {
+      return;
+    }
+    try {
+      List<DocumentReference> likeRefs = new ArrayList<>(recipes.size());
+      List<DocumentReference> saveRefs = new ArrayList<>(recipes.size());
+      for (RecipeResponse r : recipes) {
+        likeRefs.add(firestore
+            .collection(likesCollection)
+            .document(r.getId())
+            .collection("users")
+            .document(userId));
+        saveRefs.add(firestore
+            .collection(savedRecipesCollection)
+            .document(userId)
+            .collection("recipes")
+            .document(r.getId()));
+      }
+      List<DocumentSnapshot> likeDocs = firestore
+          .getAll(likeRefs.toArray(new DocumentReference[0]))
+          .get();
+      List<DocumentSnapshot> saveDocs = firestore
+          .getAll(saveRefs.toArray(new DocumentReference[0]))
+          .get();
+      for (int i = 0; i < recipes.size(); i++) {
+        if (i < likeDocs.size()) {
+          recipes.get(i).setLikedByCurrentUser(likeDocs.get(i).exists());
+        }
+        if (i < saveDocs.size()) {
+          recipes.get(i).setSavedByCurrentUser(saveDocs.get(i).exists());
+        }
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      log.warn("Interrupted while checking like/save status for user {}: {}",
+          userId, e.getMessage());
+    } catch (Exception e) {
+      log.warn("Failed to check like/save status for user {}: {}",
+          userId, e.getMessage());
     }
   }
 
