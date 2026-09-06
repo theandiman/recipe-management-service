@@ -123,34 +123,43 @@ public class RecipeController {
             @Parameter(description = "Cursor token from a previous response (omit for first page)")
             @RequestParam(name = "pageToken", required = false) String pageToken,
             @Parameter(description = "Page size (default: 20, min: 1, max: 100)")
-            @RequestParam(name = "size", defaultValue = "20") @Min(1) @Max(100) int size) {
-        log.info("Fetching public recipes (pageToken={}, size={})", pageToken, size);
-        PagedRecipeResponse response = recipeService.getPublicRecipes(pageToken, size);
+            @RequestParam(name = "size", defaultValue = "20") @Min(1) @Max(100) int size,
+            @Parameter(hidden = true)
+            @RequestAttribute(name = "userId", required = false) String currentUserId) {
+        log.info("Fetching public recipes (pageToken={}, size={}, userId={})",
+                pageToken, size, currentUserId);
+        PagedRecipeResponse response = recipeService.getPublicRecipes(pageToken, size, currentUserId);
         return ResponseEntity.ok(response);
     }
 
     /**
-     * Get a public recipe by ID without authentication.
+     * Get a public recipe by ID without requiring authentication.
      * Returns 404 if recipe does not exist or is not public.
      *
      * @param recipeId The recipe ID
+     * @param currentUserId The optional authenticated user's Firebase UID
      * @return The recipe if it exists and is public
      */
     @GetMapping("/{recipeId}/public")
     @SecurityRequirements({})
-    @Operation(summary = "Get a single public recipe", description = "Retrieves a recipe by its ID without authentication. "
-            + "Returns 404 if the recipe does not exist or is not public.")
+    @Operation(summary = "Get a single public recipe",
+            description = "Retrieves a recipe by its ID without authentication. "
+                    + "Returns 404 if the recipe does not exist or is not public.")
     @ApiResponses(value = {
-            @ApiResponse(responseCode = "200", description = "Public recipe retrieved successfully", content = @Content(schema = @Schema(implementation = RecipeResponse.class))),
-            @ApiResponse(responseCode = "404", description = "Recipe not found or is not public", content = @Content)
+            @ApiResponse(responseCode = "200", description = "Public recipe retrieved successfully",
+                    content = @Content(schema = @Schema(implementation = RecipeResponse.class))),
+            @ApiResponse(responseCode = "404", description = "Recipe not found or is not public",
+                    content = @Content)
     })
     public ResponseEntity<RecipeResponse> getPublicRecipe(
-            @Parameter(description = "Recipe ID", required = true) @PathVariable String recipeId) {
+            @Parameter(description = "Recipe ID", required = true) @PathVariable String recipeId,
+            @Parameter(hidden = true)
+            @RequestAttribute(name = "userId", required = false) String currentUserId) {
 
         MDC.put("recipe.id", recipeId);
         try {
-            log.info("Fetching public recipe {}", recipeId);
-            RecipeResponse recipe = recipeService.getPublicRecipe(recipeId);
+            log.info("Fetching public recipe {} (userId={})", recipeId, currentUserId);
+            RecipeResponse recipe = recipeService.getPublicRecipe(recipeId, currentUserId);
             return ResponseEntity.ok(recipe);
         } finally {
             MDC.remove("recipe.id");

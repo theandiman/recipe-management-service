@@ -9,6 +9,7 @@ import com.google.cloud.firestore.FieldValue;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.Query;
 import com.google.cloud.firestore.QuerySnapshot;
+import com.google.cloud.firestore.SetOptions;
 import com.google.cloud.firestore.WriteResult;
 import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.auth.FirebaseAuthException;
@@ -50,6 +51,9 @@ public class RecipeService {
 
   @Autowired(required = false)
   private FollowService followService;
+
+  @Autowired(required = false)
+  private NotificationService notificationService;
 
   @Value("${firestore.collection.recipes}")
   private String recipesCollection;
@@ -179,11 +183,17 @@ public class RecipeService {
           .updatedAt(now)
           .build();
 
-      ApiFuture<WriteResult> writeFuture = docRef.set(updatedRecipe);
+      ApiFuture<WriteResult> writeFuture = docRef.set(updatedRecipe, SetOptions.merge());
       writeFuture.get();
 
+      int existingLikeCount = extractLikeCount(document);
+      RecipeResponse response = mapToResponse(updatedRecipe);
+      response.setLikeCount(existingLikeCount);
+      response.setLikedByCurrentUser(isRecipeLikedByUser(recipeId, userId));
+      response.setSavedByCurrentUser(isRecipeSavedByUser(recipeId, userId));
+
       log.info("Recipe updated with ID: {} by user {}", recipeId, userId);
-      return mapToResponse(updatedRecipe);
+      return response;
     } catch (InterruptedException | ExecutionException e) {
       log.error("Error updating recipe in Firestore", e);
       throw new RuntimeException("Failed to update recipe", e);
@@ -438,6 +448,19 @@ public class RecipeService {
    * @return Paginated list of public recipes
    */
   public PagedRecipeResponse getPublicRecipes(String pageToken, int size) {
+    return getPublicRecipes(pageToken, size, null);
+  }
+
+  /**
+   * Get public recipes with cursor-based pagination, optionally populating like and save
+   * status for the authenticated user.
+   *
+   * @param pageToken Opaque cursor token from a previous response (null for first page)
+   * @param size Number of recipes per page (min 1, max 100)
+   * @param userId The optional Firebase UID of the requesting user
+   * @return Paginated list of public recipes
+   */
+  public PagedRecipeResponse getPublicRecipes(String pageToken, int size, String userId) {
     if (size < 1) {
       throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Page size must be at least 1");
     }
@@ -494,6 +517,35 @@ public class RecipeService {
         }
         recipes.add(response);
       });
+
+      if (userId != null && !recipes.isEmpty()) {
+        List<DocumentReference> likeRefs = new ArrayList<>();
+        List<DocumentReference> saveRefs = new ArrayList<>();
+        for (RecipeResponse r : recipes) {
+          likeRefs.add(firestore
+              .collection(likesCollection)
+              .document(r.getId())
+              .collection("users")
+              .document(userId));
+          saveRefs.add(firestore
+              .collection(savedRecipesCollection)
+              .document(userId)
+              .collection("recipes")
+              .document(r.getId()));
+        }
+        List<DocumentSnapshot> likeDocs = firestore
+            .getAll(likeRefs.toArray(new DocumentReference[0]))
+            .get();
+        for (int i = 0; i < likeDocs.size(); i++) {
+          recipes.get(i).setLikedByCurrentUser(likeDocs.get(i).exists());
+        }
+        List<DocumentSnapshot> saveDocs = firestore
+            .getAll(saveRefs.toArray(new DocumentReference[0]))
+            .get();
+        for (int i = 0; i < saveDocs.size(); i++) {
+          recipes.get(i).setSavedByCurrentUser(saveDocs.get(i).exists());
+        }
+      }
 
       String nextPageToken = encodeNextPageToken(querySnapshot);
       log.info("Found {} public recipes (size={}, total={})",
@@ -730,7 +782,7 @@ public class RecipeService {
   }
 
   /**
-   * Get a public recipe by ID without authentication.
+   * Get a public recipe by ID without requiring authentication.
    * Returns 404 if the recipe does not exist or is not public.
    *
    * @param recipeId The recipe ID
@@ -738,6 +790,20 @@ public class RecipeService {
    * @throws ResponseStatusException 404 if not found or not public
    */
   public RecipeResponse getPublicRecipe(String recipeId) {
+    return getPublicRecipe(recipeId, null);
+  }
+
+  /**
+   * Get a public recipe by ID, optionally populating like and save status
+   * for the authenticated user.
+   * Returns 404 if the recipe does not exist or is not public.
+   *
+   * @param recipeId The recipe ID
+   * @param userId The optional Firebase user ID
+   * @return The recipe if it exists and is public
+   * @throws ResponseStatusException 404 if not found or not public
+   */
+  public RecipeResponse getPublicRecipe(String recipeId, String userId) {
     if (firestore == null) {
       log.warn("Firestore not configured - cannot fetch recipe");
       throw new ResponseStatusException(
@@ -770,6 +836,10 @@ public class RecipeService {
       RecipeResponse response = mapToResponse(recipe);
       response.setAuthorDisplayName(resolveDisplayName(recipe.getUserId()));
       response.setLikeCount(extractLikeCount(document));
+      if (userId != null) {
+        response.setLikedByCurrentUser(isRecipeLikedByUser(recipeId, userId));
+        response.setSavedByCurrentUser(isRecipeSavedByUser(recipeId, userId));
+      }
       return response;
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
@@ -1072,15 +1142,36 @@ public class RecipeService {
           .collection("users")
           .document(userId);
 
-      firestore.runTransaction(transaction -> {
+      Boolean isNewLike = firestore.runTransaction(transaction -> {
         DocumentSnapshot existingLike = transaction.get(likeDocRef).get();
         if (!existingLike.exists()) {
           transaction.set(likeDocRef,
               java.util.Map.of("likedAt", FieldValue.serverTimestamp()));
           transaction.update(recipeDocRef, "likeCount", FieldValue.increment(1));
+          return true;
         }
-        return null;
+        return false;
       }).get();
+
+      if (Boolean.TRUE.equals(isNewLike) && notificationService != null) {
+        Recipe recipe = recipeDoc.toObject(Recipe.class);
+        if (recipe != null && recipe.getUserId() != null && !recipe.getUserId().equals(userId)) {
+          try {
+            String actorName = resolveDisplayName(userId);
+            notificationService.createNotification(
+                recipe.getUserId(),
+                userId,
+                actorName,
+                "RECIPE_LIKE",
+                recipeId,
+                recipe.getRecipeName(),
+                null
+            );
+          } catch (Exception e) {
+            log.warn("Failed to create like notification: {}", e.getMessage());
+          }
+        }
+      }
 
       log.info("Recipe {} liked by user {}", recipeId, userId);
     } catch (ResponseStatusException e) {
@@ -1263,23 +1354,38 @@ public class RecipeService {
    *         (including when Firestore is unavailable)
    */
   private boolean isRecipeLikedByUser(String recipeId, String userId) {
-    if (firestore == null) {
+    if (firestore == null || recipeId == null || userId == null) {
       return false;
     }
     try {
-      DocumentSnapshot doc = firestore
-          .collection(likesCollection)
-          .document(recipeId)
-          .collection("users")
-          .document(userId)
-          .get().get();
-      return doc.exists();
+      var likesCol = firestore.collection(likesCollection);
+      if (likesCol == null) {
+        return false;
+      }
+      var recipeDoc = likesCol.document(recipeId);
+      if (recipeDoc == null) {
+        return false;
+      }
+      var usersCol = recipeDoc.collection("users");
+      if (usersCol == null) {
+        return false;
+      }
+      var userDoc = usersCol.document(userId);
+      if (userDoc == null) {
+        return false;
+      }
+      var future = userDoc.get();
+      if (future == null) {
+        return false;
+      }
+      DocumentSnapshot doc = future.get();
+      return doc != null && doc.exists();
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       log.warn("Interrupted while checking like status for recipe {} user {}: {}",
           recipeId, userId, e.getMessage());
       return false;
-    } catch (ExecutionException e) {
+    } catch (Exception e) {
       log.warn("Failed to check like status for recipe {} user {}: {}",
           recipeId, userId, e.getMessage());
       return false;
@@ -1293,6 +1399,9 @@ public class RecipeService {
    * @return The like count, or 0 if not present
    */
   private int extractLikeCount(DocumentSnapshot doc) {
+    if (doc == null) {
+      return 0;
+    }
     Long count = doc.getLong("likeCount");
     return count != null ? count.intValue() : 0;
   }
@@ -1306,23 +1415,38 @@ public class RecipeService {
    *         (including when Firestore is unavailable)
    */
   private boolean isRecipeSavedByUser(String recipeId, String userId) {
-    if (firestore == null) {
+    if (firestore == null || recipeId == null || userId == null) {
       return false;
     }
     try {
-      DocumentSnapshot doc = firestore
-          .collection(savedRecipesCollection)
-          .document(userId)
-          .collection("recipes")
-          .document(recipeId)
-          .get().get();
-      return doc.exists();
+      var savedCol = firestore.collection(savedRecipesCollection);
+      if (savedCol == null) {
+        return false;
+      }
+      var userDoc = savedCol.document(userId);
+      if (userDoc == null) {
+        return false;
+      }
+      var recipesCol = userDoc.collection("recipes");
+      if (recipesCol == null) {
+        return false;
+      }
+      var recipeDoc = recipesCol.document(recipeId);
+      if (recipeDoc == null) {
+        return false;
+      }
+      var future = recipeDoc.get();
+      if (future == null) {
+        return false;
+      }
+      DocumentSnapshot doc = future.get();
+      return doc != null && doc.exists();
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       log.warn("Interrupted while checking saved status for recipe {} user {}: {}",
           recipeId, userId, e.getMessage());
       return false;
-    } catch (ExecutionException e) {
+    } catch (Exception e) {
       log.warn("Failed to check saved status for recipe {} user {}: {}",
           recipeId, userId, e.getMessage());
       return false;
