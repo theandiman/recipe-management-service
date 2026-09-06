@@ -292,4 +292,37 @@ class RecipeControllerIntegrationTest {
                 .andExpect(jsonPath("$.likeCount").value(0))
                 .andExpect(jsonPath("$.isLikedByCurrentUser").value(false));
     }
+
+    @Test
+    void createRecipe_WithZeroCookTime_Success() throws Exception {
+        CreateRecipeRequest request = CreateRecipeRequest.builder()
+                .title("No-Cook Banana Split")
+                .description("A delicious dessert with zero cook time")
+                .ingredients(List.of("1 Banana", "3 scoops ice cream"))
+                .instructions(List.of("Peel banana", "Add ice cream"))
+                .prepTime(10)
+                .cookTime(0)
+                .totalTime(10)
+                .servings(1)
+                .source("ai-generated")
+                .build();
+
+        mockMvc.perform(post("/api/recipes")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(request))
+                .header("X-User-ID", "test-user"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.cookTime").value(0));
+    }
+
+    @Test
+    void updateRecipeSharing_WithPutMethod_IsSupported() throws Exception {
+        String sharingRequest = "{\"isPublic\": true}";
+
+        mockMvc.perform(put("/api/recipes/some-id/sharing")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(sharingRequest)
+                .header("X-User-ID", "test-user"))
+                .andExpect(status().isNotFound());
+    }
 }
