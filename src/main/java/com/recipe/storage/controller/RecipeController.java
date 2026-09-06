@@ -32,6 +32,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestAttribute;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -375,7 +376,7 @@ public class RecipeController {
      * @param userId   The authenticated user's Firebase UID (injected by auth filter)
      * @return The updated recipe
      */
-    @PatchMapping("/{recipeId}/sharing")
+    @RequestMapping(value = "/{recipeId}/sharing", method = {RequestMethod.PATCH, RequestMethod.PUT})
     @Operation(summary = "Update recipe sharing status", description = "Updates whether a recipe is public or private. User must own the recipe. "
             + "Requires Firebase authentication token in Authorization header.")
     @ApiResponses(value = {

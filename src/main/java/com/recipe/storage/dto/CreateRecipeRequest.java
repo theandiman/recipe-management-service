@@ -5,6 +5,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.PositiveOrZero;
 import java.util.List;
 import java.util.Map;
 import lombok.AllArgsConstructor;
@@ -39,15 +40,15 @@ public class CreateRecipeRequest {
             + "\"Mix eggs and cheese\"]", required = true)
     private List<String> instructions;
 
-    @Positive(message = "Prep time must be positive")
+    @PositiveOrZero(message = "Prep time must be positive or zero")
     @Schema(description = "Preparation time in minutes", example = "15")
     private Integer prepTime;
 
-    @Positive(message = "Cook time must be positive")
+    @PositiveOrZero(message = "Cook time must be positive or zero")
     @Schema(description = "Cooking time in minutes", example = "20")
     private Integer cookTime;
 
-    @Positive(message = "Total time must be positive")
+    @PositiveOrZero(message = "Total time must be positive or zero")
     @Schema(description = "Total time in minutes (optional; computed as prepTime + cookTime if omitted)", example = "35")
     private Integer totalTime;
 
