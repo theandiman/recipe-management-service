@@ -1491,22 +1491,41 @@ public class RecipeService {
   }
 
   /**
-   * Resolve a Firebase user's display name, returning null on failure.
+   * Resolve a user's display name from Firestore profile or Firebase Auth,
+   * returning null on failure.
    *
    * @param userId The Firebase user ID
    * @return The display name, or null if lookup fails or auth is unavailable
    */
   private String resolveDisplayName(String userId) {
-    if (firebaseAuth == null || userId == null) {
+    if (userId == null) {
       return null;
     }
-    try {
-      UserRecord userRecord = firebaseAuth.getUser(userId);
-      return userRecord != null ? userRecord.getDisplayName() : null;
-    } catch (FirebaseAuthException e) {
-      log.warn("Failed to resolve display name for user {}: {}", userId, e.getMessage());
-      return null;
+    if (firestore != null) {
+      try {
+        DocumentSnapshot userDoc = firestore.collection("users").document(userId).get().get();
+        if (userDoc.exists()) {
+          String displayName = userDoc.getString("displayName");
+          if (displayName != null && !displayName.isBlank()) {
+            return displayName;
+          }
+        }
+      } catch (Exception e) {
+        // Fallback to Firebase Auth
+      }
     }
+    if (firebaseAuth != null) {
+      try {
+        UserRecord userRecord = firebaseAuth.getUser(userId);
+        if (userRecord != null && userRecord.getDisplayName() != null
+            && !userRecord.getDisplayName().isBlank()) {
+          return userRecord.getDisplayName();
+        }
+      } catch (FirebaseAuthException e) {
+        log.warn("Failed to resolve display name for user {}: {}", userId, e.getMessage());
+      }
+    }
+    return null;
   }
 
   /**

@@ -586,6 +586,53 @@ class RecipeServiceTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void getPublicRecipe_PopulatesAuthorDisplayNameFromFirestoreProfile() throws Exception {
+        // Arrange
+        String recipeId = "recipe123";
+        String userId = "user123";
+        String displayName = "Chef Ramsay";
+
+        CollectionReference recipesCol = mock(CollectionReference.class);
+        CollectionReference usersCol = mock(CollectionReference.class);
+        when(firestore.collection("recipes")).thenReturn(recipesCol);
+        when(firestore.collection("users")).thenReturn(usersCol);
+
+        when(recipesCol.document(recipeId)).thenReturn(documentReference);
+
+        ApiFuture<DocumentSnapshot> futureRecipeSnapshot = mock(ApiFuture.class);
+        DocumentSnapshot recipeSnapshot = mock(DocumentSnapshot.class);
+        when(documentReference.get()).thenReturn(futureRecipeSnapshot);
+        when(futureRecipeSnapshot.get()).thenReturn(recipeSnapshot);
+        when(recipeSnapshot.exists()).thenReturn(true);
+
+        Recipe recipe = Recipe.builder()
+                .id(recipeId)
+                .userId(userId)
+                .recipeName("Public Recipe")
+                .publicRecipe(true)
+                .createdAt(Instant.now())
+                .build();
+        when(recipeSnapshot.toObject(Recipe.class)).thenReturn(recipe);
+
+        DocumentReference userDocRef = mock(DocumentReference.class);
+        when(usersCol.document(userId)).thenReturn(userDocRef);
+        ApiFuture<DocumentSnapshot> futureUserSnapshot = mock(ApiFuture.class);
+        DocumentSnapshot userSnapshot = mock(DocumentSnapshot.class);
+        when(userDocRef.get()).thenReturn(futureUserSnapshot);
+        when(futureUserSnapshot.get()).thenReturn(userSnapshot);
+        when(userSnapshot.exists()).thenReturn(true);
+        when(userSnapshot.getString("displayName")).thenReturn(displayName);
+
+        // Act
+        RecipeResponse response = recipeService.getPublicRecipe(recipeId);
+
+        // Assert
+        assertNotNull(response);
+        assertEquals(displayName, response.getAuthorDisplayName());
+    }
+
+    @Test
     void getPublicRecipe_FirebaseLookupFails_ReturnsNullDisplayName() throws Exception {
         // Arrange
         String recipeId = "recipe123";
