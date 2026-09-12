@@ -24,4 +24,7 @@ public class FollowUserResponse {
 
   @Schema(description = "Profile photo URL of the user")
   private String photoUrl;
+
+  @Schema(description = "Avatar URL of the user", example = "https://example.com/avatar.jpg")
+  private String avatarUrl;
 }

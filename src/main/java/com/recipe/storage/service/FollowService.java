@@ -328,6 +328,7 @@ public class FollowService {
               .uid(userId)
               .displayName(displayName)
               .photoUrl(photoUrl)
+              .avatarUrl(photoUrl)
               .build());
         }
       }

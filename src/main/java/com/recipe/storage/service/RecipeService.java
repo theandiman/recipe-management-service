@@ -504,6 +504,7 @@ public class RecipeService {
 
       List<RecipeResponse> recipes = new ArrayList<>();
       Map<String, String> displayNameCache = new HashMap<>();
+      Map<String, String> avatarUrlCache = new HashMap<>();
       querySnapshot.getDocuments().forEach(doc -> {
         Recipe recipe = doc.toObject(Recipe.class);
         RecipeResponse response = mapToResponse(recipe);
@@ -513,7 +514,11 @@ public class RecipeService {
           if (!displayNameCache.containsKey(uid)) {
             displayNameCache.put(uid, resolveDisplayName(uid));
           }
+          if (!avatarUrlCache.containsKey(uid)) {
+            avatarUrlCache.put(uid, resolveAvatarUrl(uid));
+          }
           response.setAuthorDisplayName(displayNameCache.get(uid));
+          response.setAuthorAvatarUrl(avatarUrlCache.get(uid));
         }
         recipes.add(response);
       });
@@ -615,6 +620,7 @@ public class RecipeService {
 
       List<RecipeResponse> recipes = new ArrayList<>();
       Map<String, String> displayNameCache = new HashMap<>();
+      Map<String, String> avatarUrlCache = new HashMap<>();
       for (Recipe recipe : page) {
         RecipeResponse response = mapToResponse(recipe);
         response.setLikeCount(
@@ -624,7 +630,11 @@ public class RecipeService {
           if (!displayNameCache.containsKey(uid)) {
             displayNameCache.put(uid, resolveDisplayName(uid));
           }
+          if (!avatarUrlCache.containsKey(uid)) {
+            avatarUrlCache.put(uid, resolveAvatarUrl(uid));
+          }
           response.setAuthorDisplayName(displayNameCache.get(uid));
+          response.setAuthorAvatarUrl(avatarUrlCache.get(uid));
         }
         recipes.add(response);
       }
@@ -792,6 +802,7 @@ public class RecipeService {
       log.info("Retrieved public recipe {}", recipeId);
       RecipeResponse response = mapToResponse(recipe);
       response.setAuthorDisplayName(resolveDisplayName(recipe.getUserId()));
+      response.setAuthorAvatarUrl(resolveAvatarUrl(recipe.getUserId()));
       response.setLikeCount(extractLikeCount(document));
       if (userId != null) {
         response.setLikedByCurrentUser(isRecipeLikedByUser(recipeId, userId));
@@ -1496,6 +1507,43 @@ public class RecipeService {
       log.warn("Failed to resolve display name for user {}: {}", userId, e.getMessage());
       return null;
     }
+  }
+
+  /**
+   * Helper to resolve the avatar URL for a user from Firestore profile or Firebase Auth.
+   *
+   * @param userId The Firebase user ID
+   * @return The avatar URL, or null if not set or lookup fails
+   */
+  private String resolveAvatarUrl(String userId) {
+    if (userId == null) {
+      return null;
+    }
+    if (firestore != null) {
+      try {
+        DocumentSnapshot userDoc = firestore.collection("users").document(userId).get().get();
+        if (userDoc.exists()) {
+          String avatarUrl = userDoc.getString("avatarUrl");
+          if (avatarUrl != null && !avatarUrl.isBlank()) {
+            return avatarUrl;
+          }
+        }
+      } catch (Exception e) {
+        // Fallback to Firebase Auth
+      }
+    }
+    if (firebaseAuth != null) {
+      try {
+        UserRecord userRecord = firebaseAuth.getUser(userId);
+        if (userRecord != null && userRecord.getPhotoUrl() != null
+            && !userRecord.getPhotoUrl().isBlank()) {
+          return userRecord.getPhotoUrl();
+        }
+      } catch (FirebaseAuthException e) {
+        log.warn("Failed to resolve avatar URL for user {}: {}", userId, e.getMessage());
+      }
+    }
+    return null;
   }
 
   /**

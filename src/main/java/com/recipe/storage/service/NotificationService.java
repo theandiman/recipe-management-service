@@ -4,6 +4,8 @@ import com.google.cloud.firestore.DocumentSnapshot;
 import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.Query;
 import com.google.cloud.firestore.QuerySnapshot;
+import com.google.firebase.auth.FirebaseAuth;
+import com.google.firebase.auth.UserRecord;
 import com.recipe.storage.dto.MarkNotificationsReadRequest;
 import com.recipe.storage.dto.PagedNotificationResponse;
 import com.recipe.storage.dto.SocialNotificationResponse;
@@ -30,6 +32,9 @@ public class NotificationService {
   @Autowired(required = false)
   private Firestore firestore;
 
+  @Autowired(required = false)
+  private FirebaseAuth firebaseAuth;
+
   @Value("${firestore.collection.notifications:notifications}")
   private String notificationsCollection;
 
@@ -41,18 +46,33 @@ public class NotificationService {
    */
   public void createNotification(String recipientUid, String actorUid, String actorName,
       String eventType, String targetRecipeId, String targetRecipeName, String contentSnippet) {
+    createNotification(recipientUid, actorUid, actorName, null, eventType, targetRecipeId,
+        targetRecipeName, contentSnippet);
+  }
+
+  /**
+   * Create social notification with explicit actor avatar URL.
+   */
+  public void createNotification(String recipientUid, String actorUid, String actorName,
+      String actorAvatarUrl, String eventType, String targetRecipeId, String targetRecipeName,
+      String contentSnippet) {
     if (recipientUid == null || recipientUid.isBlank() || recipientUid.equals(actorUid)) {
       return;
     }
 
-    String id = UUID.randomUUID().toString();
-    Instant now = Instant.now();
+    final String id = UUID.randomUUID().toString();
+    final Instant now = Instant.now();
+    final String resolvedAvatarUrl = (actorAvatarUrl != null && !actorAvatarUrl.isBlank())
+        ? actorAvatarUrl : resolveAvatarUrl(actorUid);
 
     Map<String, Object> data = new HashMap<>();
     data.put("id", id);
     data.put("recipientUid", recipientUid);
     data.put("actorUid", actorUid);
     data.put("actorName", actorName != null ? actorName : "Chef User");
+    if (resolvedAvatarUrl != null) {
+      data.put("actorAvatarUrl", resolvedAvatarUrl);
+    }
     data.put("eventType", eventType);
     data.put("targetRecipeId", targetRecipeId);
     data.put("targetRecipeName", targetRecipeName);
@@ -187,5 +207,36 @@ public class NotificationService {
         .notifications(list)
         .hasMore(false)
         .build();
+  }
+
+  private String resolveAvatarUrl(String uid) {
+    if (uid == null) {
+      return null;
+    }
+    if (firestore != null) {
+      try {
+        DocumentSnapshot userDoc = firestore.collection("users").document(uid).get().get();
+        if (userDoc.exists()) {
+          String avatarUrl = userDoc.getString("avatarUrl");
+          if (avatarUrl != null && !avatarUrl.isBlank()) {
+            return avatarUrl;
+          }
+        }
+      } catch (Exception e) {
+        // Fallback
+      }
+    }
+    if (firebaseAuth != null) {
+      try {
+        UserRecord record = firebaseAuth.getUser(uid);
+        if (record != null && record.getPhotoUrl() != null
+            && !record.getPhotoUrl().isBlank()) {
+          return record.getPhotoUrl();
+        }
+      } catch (Exception e) {
+        // Ignore
+      }
+    }
+    return null;
   }
 }
