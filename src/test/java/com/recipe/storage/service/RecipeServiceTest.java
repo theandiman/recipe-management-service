@@ -545,6 +545,47 @@ class RecipeServiceTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void getPublicRecipe_PopulatesAuthorAvatarUrl() throws Exception {
+        // Arrange
+        String recipeId = "recipe123";
+        String userId = "user123";
+        String photoUrl = "https://example.com/avatar.jpg";
+
+        com.google.cloud.firestore.CollectionReference collectionRef = mock(
+                com.google.cloud.firestore.CollectionReference.class);
+        when(firestore.collection(anyString())).thenReturn(collectionRef);
+        when(collectionRef.document(recipeId)).thenReturn(documentReference);
+
+        ApiFuture<com.google.cloud.firestore.DocumentSnapshot> futureSnapshot = mock(ApiFuture.class);
+        com.google.cloud.firestore.DocumentSnapshot documentSnapshot = mock(
+                com.google.cloud.firestore.DocumentSnapshot.class);
+        when(documentReference.get()).thenReturn(futureSnapshot);
+        when(futureSnapshot.get()).thenReturn(documentSnapshot);
+        when(documentSnapshot.exists()).thenReturn(true);
+
+        Recipe recipe = Recipe.builder()
+                .id(recipeId)
+                .userId(userId)
+                .recipeName("Public Recipe")
+                .publicRecipe(true)
+                .createdAt(Instant.now())
+                .build();
+        when(documentSnapshot.toObject(Recipe.class)).thenReturn(recipe);
+
+        UserRecord userRecord = mock(UserRecord.class);
+        when(firebaseAuth.getUser(userId)).thenReturn(userRecord);
+        when(userRecord.getPhotoUrl()).thenReturn(photoUrl);
+
+        // Act
+        RecipeResponse response = recipeService.getPublicRecipe(recipeId);
+
+        // Assert
+        assertNotNull(response);
+        assertEquals(photoUrl, response.getAuthorAvatarUrl());
+    }
+
+    @Test
     void getPublicRecipe_FirebaseLookupFails_ReturnsNullDisplayName() throws Exception {
         // Arrange
         String recipeId = "recipe123";

@@ -84,6 +84,10 @@ public class RecipeResponse {
             example = "Jane Smith")
     private String authorDisplayName;
 
+    @Schema(description = "Avatar URL of the recipe author (populated for public recipes)", nullable = true,
+            example = "https://example.com/images/avatar.jpg")
+    private String authorAvatarUrl;
+
     @Schema(description = "Whether this recipe is saved/bookmarked by the current authenticated user",
             example = "false")
     @JsonProperty("isSavedByCurrentUser")

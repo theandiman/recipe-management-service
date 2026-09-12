@@ -71,18 +71,22 @@ public class RatingService {
         throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Recipe not found");
       }
 
-      String ratingDocId = recipeId + "_" + userId;
-      DocumentReference ratingRef =
+      final String ratingDocId = recipeId + "_" + userId;
+      final DocumentReference ratingRef =
           firestore.collection(ratingsCollection).document(ratingDocId);
 
-      Instant now = Instant.now();
-      String authorName = resolveDisplayName(userId);
+      final Instant now = Instant.now();
+      final String authorName = resolveDisplayName(userId);
+      final String authorAvatarUrl = resolveAvatarUrl(userId);
 
       Map<String, Object> data = new HashMap<>();
       data.put("id", ratingDocId);
       data.put("recipeId", recipeId);
       data.put("userId", userId);
       data.put("authorName", authorName);
+      if (authorAvatarUrl != null) {
+        data.put("authorAvatarUrl", authorAvatarUrl);
+      }
       data.put("score", request.getScore());
       data.put("reviewText", request.getReviewText());
       data.put("updatedAt", now.toString());
@@ -290,5 +294,36 @@ public class RatingService {
       }
     }
     return "Chef " + uid.substring(0, Math.min(5, uid.length()));
+  }
+
+  private String resolveAvatarUrl(String uid) {
+    if (uid == null) {
+      return null;
+    }
+    if (firestore != null) {
+      try {
+        DocumentSnapshot userDoc = firestore.collection("users").document(uid).get().get();
+        if (userDoc.exists()) {
+          String avatarUrl = userDoc.getString("avatarUrl");
+          if (avatarUrl != null && !avatarUrl.isBlank()) {
+            return avatarUrl;
+          }
+        }
+      } catch (Exception e) {
+        // Fallback
+      }
+    }
+    if (firebaseAuth != null) {
+      try {
+        UserRecord record = firebaseAuth.getUser(uid);
+        if (record != null && record.getPhotoUrl() != null
+            && !record.getPhotoUrl().isBlank()) {
+          return record.getPhotoUrl();
+        }
+      } catch (FirebaseAuthException e) {
+        // Ignore
+      }
+    }
+    return null;
   }
 }

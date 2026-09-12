@@ -602,6 +602,7 @@ class FollowServiceTest {
         assertEquals(followerUid, user.getUid());
         assertEquals("Alice", user.getDisplayName());
         assertEquals("https://example.com/alice.jpg", user.getPhotoUrl());
+        assertEquals("https://example.com/alice.jpg", user.getAvatarUrl());
 
         // Next page token should be encoded timestamp
         String expectedToken = Base64.getUrlEncoder().withoutPadding()
@@ -658,6 +659,7 @@ class FollowServiceTest {
         assertEquals(followedUid, user.getUid());
         assertEquals("Bob", user.getDisplayName());
         assertNull(user.getPhotoUrl());
+        assertNull(user.getAvatarUrl());
     }
 
     @Test
