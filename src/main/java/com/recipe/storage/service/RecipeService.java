@@ -64,6 +64,9 @@ public class RecipeService {
   @Value("${firestore.collection.likes:likes}")
   private String likesCollection;
 
+  @Value("${firestore.collection.users:users}")
+  private String usersCollection = "users";
+
   // In-memory store for testing when Firestore is not available
   private final ConcurrentHashMap<String, Recipe> mockStore = new ConcurrentHashMap<>();
 
@@ -503,22 +506,16 @@ public class RecipeService {
       QuerySnapshot querySnapshot = future.get();
 
       List<RecipeResponse> recipes = new ArrayList<>();
-      Map<String, String> displayNameCache = new HashMap<>();
-      Map<String, String> avatarUrlCache = new HashMap<>();
+      Map<String, AuthorInfo> authorCache = new HashMap<>();
       querySnapshot.getDocuments().forEach(doc -> {
         Recipe recipe = doc.toObject(Recipe.class);
         RecipeResponse response = mapToResponse(recipe);
         response.setLikeCount(extractLikeCount(doc));
         String uid = recipe.getUserId();
         if (uid != null) {
-          if (!displayNameCache.containsKey(uid)) {
-            displayNameCache.put(uid, resolveDisplayName(uid));
-          }
-          if (!avatarUrlCache.containsKey(uid)) {
-            avatarUrlCache.put(uid, resolveAvatarUrl(uid));
-          }
-          response.setAuthorDisplayName(displayNameCache.get(uid));
-          response.setAuthorAvatarUrl(avatarUrlCache.get(uid));
+          AuthorInfo authorInfo = authorCache.computeIfAbsent(uid, this::resolveAuthorInfo);
+          response.setAuthorDisplayName(authorInfo.displayName());
+          response.setAuthorAvatarUrl(authorInfo.avatarUrl());
         }
         recipes.add(response);
       });
@@ -619,22 +616,16 @@ public class RecipeService {
       List<Recipe> page = allRecipes.subList(0, Math.min(size, allRecipes.size()));
 
       List<RecipeResponse> recipes = new ArrayList<>();
-      Map<String, String> displayNameCache = new HashMap<>();
-      Map<String, String> avatarUrlCache = new HashMap<>();
+      Map<String, AuthorInfo> authorCache = new HashMap<>();
       for (Recipe recipe : page) {
         RecipeResponse response = mapToResponse(recipe);
         response.setLikeCount(
             likeCountByRecipeId.getOrDefault(recipe.getId(), 0L).intValue());
         String uid = recipe.getUserId();
         if (uid != null) {
-          if (!displayNameCache.containsKey(uid)) {
-            displayNameCache.put(uid, resolveDisplayName(uid));
-          }
-          if (!avatarUrlCache.containsKey(uid)) {
-            avatarUrlCache.put(uid, resolveAvatarUrl(uid));
-          }
-          response.setAuthorDisplayName(displayNameCache.get(uid));
-          response.setAuthorAvatarUrl(avatarUrlCache.get(uid));
+          AuthorInfo authorInfo = authorCache.computeIfAbsent(uid, this::resolveAuthorInfo);
+          response.setAuthorDisplayName(authorInfo.displayName());
+          response.setAuthorAvatarUrl(authorInfo.avatarUrl());
         }
         recipes.add(response);
       }
@@ -801,8 +792,9 @@ public class RecipeService {
 
       log.info("Retrieved public recipe {}", recipeId);
       RecipeResponse response = mapToResponse(recipe);
-      response.setAuthorDisplayName(resolveDisplayName(recipe.getUserId()));
-      response.setAuthorAvatarUrl(resolveAvatarUrl(recipe.getUserId()));
+      AuthorInfo authorInfo = resolveAuthorInfo(recipe.getUserId());
+      response.setAuthorDisplayName(authorInfo.displayName());
+      response.setAuthorAvatarUrl(authorInfo.avatarUrl());
       response.setLikeCount(extractLikeCount(document));
       if (userId != null) {
         response.setLikedByCurrentUser(isRecipeLikedByUser(recipeId, userId));
@@ -1491,22 +1483,81 @@ public class RecipeService {
   }
 
   /**
-   * Resolve a Firebase user's display name, returning null on failure.
+   * Helper record to hold resolved author metadata (display name and avatar URL).
+   */
+  private record AuthorInfo(String displayName, String avatarUrl) {}
+
+  /**
+   * Helper to resolve author metadata (display name and avatar URL) from Firestore profile
+   * or Firebase Auth.
+   *
+   * @param userId The user ID
+   * @return The resolved author information
+   */
+  private AuthorInfo resolveAuthorInfo(String userId) {
+    if (userId == null) {
+      return new AuthorInfo(null, null);
+    }
+    String displayName = null;
+    String avatarUrl = null;
+
+    if (firestore != null && usersCollection != null) {
+      try {
+        DocumentSnapshot userDoc =
+            firestore.collection(usersCollection).document(userId).get().get();
+        if (userDoc.exists()) {
+          String docDisplayName = userDoc.getString("displayName");
+          if (docDisplayName != null && !docDisplayName.isBlank()) {
+            displayName = docDisplayName;
+          }
+          String docAvatarUrl = userDoc.getString("avatarUrl");
+          if (docAvatarUrl != null && !docAvatarUrl.isBlank()) {
+            avatarUrl = docAvatarUrl;
+          }
+        }
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        log.warn("Interrupted while resolving profile for user {}", userId);
+      } catch (ExecutionException e) {
+        log.warn("Failed to resolve profile from Firestore for user {}: {}",
+            userId, e.getMessage());
+      } catch (Exception e) {
+        log.warn("Unexpected error resolving profile from Firestore for user {}: {}",
+            userId, e.getMessage());
+      }
+    }
+
+    if (firebaseAuth != null && (displayName == null || avatarUrl == null)) {
+      try {
+        UserRecord userRecord = firebaseAuth.getUser(userId);
+        if (userRecord != null) {
+          if (displayName == null && userRecord.getDisplayName() != null
+              && !userRecord.getDisplayName().isBlank()) {
+            displayName = userRecord.getDisplayName();
+          }
+          if (avatarUrl == null && userRecord.getPhotoUrl() != null
+              && !userRecord.getPhotoUrl().isBlank()) {
+            avatarUrl = userRecord.getPhotoUrl();
+          }
+        }
+      } catch (FirebaseAuthException e) {
+        log.warn("Failed to resolve profile from Firebase Auth for user {}: {}",
+            userId, e.getMessage());
+      }
+    }
+
+    return new AuthorInfo(displayName, avatarUrl);
+  }
+
+  /**
+   * Resolve a user's display name from Firestore profile or Firebase Auth,
+   * returning null on failure.
    *
    * @param userId The Firebase user ID
    * @return The display name, or null if lookup fails or auth is unavailable
    */
   private String resolveDisplayName(String userId) {
-    if (firebaseAuth == null || userId == null) {
-      return null;
-    }
-    try {
-      UserRecord userRecord = firebaseAuth.getUser(userId);
-      return userRecord != null ? userRecord.getDisplayName() : null;
-    } catch (FirebaseAuthException e) {
-      log.warn("Failed to resolve display name for user {}: {}", userId, e.getMessage());
-      return null;
-    }
+    return resolveAuthorInfo(userId).displayName();
   }
 
   /**
@@ -1516,34 +1567,7 @@ public class RecipeService {
    * @return The avatar URL, or null if not set or lookup fails
    */
   private String resolveAvatarUrl(String userId) {
-    if (userId == null) {
-      return null;
-    }
-    if (firestore != null) {
-      try {
-        DocumentSnapshot userDoc = firestore.collection("users").document(userId).get().get();
-        if (userDoc.exists()) {
-          String avatarUrl = userDoc.getString("avatarUrl");
-          if (avatarUrl != null && !avatarUrl.isBlank()) {
-            return avatarUrl;
-          }
-        }
-      } catch (Exception e) {
-        // Fallback to Firebase Auth
-      }
-    }
-    if (firebaseAuth != null) {
-      try {
-        UserRecord userRecord = firebaseAuth.getUser(userId);
-        if (userRecord != null && userRecord.getPhotoUrl() != null
-            && !userRecord.getPhotoUrl().isBlank()) {
-          return userRecord.getPhotoUrl();
-        }
-      } catch (FirebaseAuthException e) {
-        log.warn("Failed to resolve avatar URL for user {}: {}", userId, e.getMessage());
-      }
-    }
-    return null;
+    return resolveAuthorInfo(userId).avatarUrl();
   }
 
   /**
