@@ -19,6 +19,9 @@ import com.recipe.shared.model.Recipe;
 import com.recipe.storage.dto.CreateRecipeRequest;
 import com.recipe.storage.dto.PagedRecipeResponse;
 import com.recipe.storage.dto.RecipeResponse;
+import com.recipe.storage.mapper.RecipeMapper;
+import com.recipe.storage.service.RecipeAuthorService.AuthorInfo;
+import com.recipe.storage.util.PaginationUtils;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -55,6 +58,15 @@ public class RecipeService {
   @Autowired(required = false)
   private NotificationService notificationService;
 
+  @Autowired(required = false)
+  private RecipeAuthorService recipeAuthorService;
+
+  @Autowired(required = false)
+  private RecipeSocialService recipeSocialService;
+
+  @Autowired(required = false)
+  private RecipeMapper recipeMapper;
+
   @Value("${firestore.collection.recipes}")
   private String recipesCollection;
 
@@ -69,6 +81,40 @@ public class RecipeService {
 
   // In-memory store for testing when Firestore is not available
   private final ConcurrentHashMap<String, Recipe> mockStore = new ConcurrentHashMap<>();
+
+  public void setRecipeAuthorService(RecipeAuthorService recipeAuthorService) {
+    this.recipeAuthorService = recipeAuthorService;
+  }
+
+  public void setRecipeSocialService(RecipeSocialService recipeSocialService) {
+    this.recipeSocialService = recipeSocialService;
+  }
+
+  public void setRecipeMapper(RecipeMapper recipeMapper) {
+    this.recipeMapper = recipeMapper;
+  }
+
+  private RecipeAuthorService authorService() {
+    if (recipeAuthorService != null) {
+      return recipeAuthorService;
+    }
+    return new RecipeAuthorService(firestore, firebaseAuth, usersCollection);
+  }
+
+  private RecipeSocialService socialService() {
+    if (recipeSocialService != null) {
+      return recipeSocialService;
+    }
+    return new RecipeSocialService(firestore, followService, notificationService,
+        authorService(), mapper(), recipesCollection, savedRecipesCollection, likesCollection);
+  }
+
+  private RecipeMapper mapper() {
+    if (recipeMapper != null) {
+      return recipeMapper;
+    }
+    return new RecipeMapper();
+  }
 
   /**
    * Save a new recipe to Firestore.
@@ -547,173 +593,32 @@ public class RecipeService {
    * @return paginated feed of public recipes from followed users
    */
   public PagedRecipeResponse getFeed(String userId, String pageToken, int size) {
-    if (size < 1) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Page size must be at least 1");
-    }
-    if (size > 100) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Page size must not exceed 100");
-    }
-
-    Timestamp cursor = null;
-    if (pageToken != null && !pageToken.isEmpty()) {
-      cursor = decodePageToken(pageToken);
-    }
-
-    List<String> followingIds = followService != null
-        ? followService.getFollowingIds(userId)
-        : List.of();
-
-    if (followingIds.isEmpty()) {
-      log.info("Feed for user {}: following no one, returning empty feed", userId);
-      return emptyFeedResponse(size);
-    }
-
-    if (firestore == null) {
-      log.warn("Firestore not configured - returning empty feed");
-      return emptyFeedResponse(size);
-    }
-
-    // The same createdAt timestamp cursor is applied to each batch independently.
-    // This is correct because createdAt is a global ordering field shared by all recipes;
-    // every batch skips the same point in time, so merging and re-sorting across batches
-    // produces a consistent total ordering.
-    List<List<String>> batches = partitionList(followingIds, 30);
-    try {
-      List<Recipe> allRecipes = new ArrayList<>();
-      Map<String, Long> likeCountByRecipeId = new HashMap<>();
-      for (List<String> batch : batches) {
-        Query query = firestore.collection(recipesCollection)
-            .whereIn("userId", batch)
-            .whereEqualTo("isPublic", true)
-            .orderBy("createdAt", Query.Direction.DESCENDING);
-        if (cursor != null) {
-          query = query.startAfter(cursor);
-        }
-        // Fetch size+1 items per batch so we can detect whether a next page exists after merging.
-        query = query.limit(size + 1);
-        query.get().get().getDocuments()
-            .forEach(doc -> {
-              allRecipes.add(doc.toObject(Recipe.class));
-              Long likeCount = doc.getLong("likeCount");
-              if (likeCount != null) {
-                likeCountByRecipeId.put(doc.getId(), likeCount);
-              }
-            });
-      }
-
-      allRecipes.sort((a, b) -> {
-        if (b.getCreatedAt() == null) {
-          return -1;
-        }
-        if (a.getCreatedAt() == null) {
-          return 1;
-        }
-        return b.getCreatedAt().compareTo(a.getCreatedAt());
-      });
-
-      // allRecipes.size() > size means there is at least one more result beyond this page.
-      boolean hasNextPage = allRecipes.size() > size;
-      List<Recipe> page = allRecipes.subList(0, Math.min(size, allRecipes.size()));
-
-      List<RecipeResponse> recipes = new ArrayList<>();
-      Map<String, AuthorInfo> authorCache = new HashMap<>();
-      for (Recipe recipe : page) {
-        RecipeResponse response = mapToResponse(recipe);
-        response.setLikeCount(
-            likeCountByRecipeId.getOrDefault(recipe.getId(), 0L).intValue());
-        String uid = recipe.getUserId();
-        if (uid != null) {
-          AuthorInfo authorInfo = authorCache.computeIfAbsent(uid, this::resolveAuthorInfo);
-          response.setAuthorDisplayName(authorInfo.displayName());
-          response.setAuthorAvatarUrl(authorInfo.avatarUrl());
-        }
-        recipes.add(response);
-      }
-
-      populateLikeAndSaveStatuses(recipes, userId);
-
-      String nextPageToken = null;
-      if (hasNextPage && !page.isEmpty()) {
-        java.time.Instant lastCreatedAt = page.get(page.size() - 1).getCreatedAt();
-        if (lastCreatedAt != null) {
-          String cursorStr = lastCreatedAt.getEpochSecond() + "," + lastCreatedAt.getNano();
-          nextPageToken = Base64.getUrlEncoder().withoutPadding()
-              .encodeToString(cursorStr.getBytes(StandardCharsets.UTF_8));
-        }
-      }
-
-      log.info("Feed for user {}: {} recipes returned", userId, recipes.size());
-      return PagedRecipeResponse.builder()
-          .recipes(recipes)
-          .size(size)
-          .totalCount(0)
-          .nextPageToken(nextPageToken)
-          .build();
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      log.error("Interrupted while fetching feed for user {}", userId, e);
-      throw new RuntimeException("Failed to fetch feed", e);
-    } catch (ExecutionException e) {
-      log.error("Error fetching feed for user {}", userId, e);
-      throw new RuntimeException("Failed to fetch feed", e);
-    }
-  }
-
-  private PagedRecipeResponse emptyFeedResponse(int size) {
-    return PagedRecipeResponse.builder()
-        .recipes(new ArrayList<>())
-        .size(size)
-        .totalCount(0)
-        .nextPageToken(null)
-        .build();
+    return socialService().getFeed(userId, pageToken, size);
   }
 
   private static <T> List<List<T>> partitionList(List<T> list, int batchSize) {
-    List<List<T>> partitions = new ArrayList<>();
-    for (int i = 0; i < list.size(); i += batchSize) {
-      partitions.add(list.subList(i, Math.min(i + batchSize, list.size())));
-    }
-    return partitions;
+    return PaginationUtils.partitionList(list, batchSize);
   }
 
   /**
    * Decodes an opaque page token into a Firestore {@link Timestamp} cursor.
    *
-   * <p>The token is a URL-safe base64 string encoding {@code "<seconds>,<nanos>"}.
-   * Throws {@code 400 Bad Request} if the token is malformed or cannot be decoded.
-   *
    * @param pageToken the opaque cursor token from a previous paged response
    * @return the decoded Firestore Timestamp to pass to {@code startAfter()}
    */
   private Timestamp decodePageToken(String pageToken) {
-    try {
-      byte[] decoded = Base64.getUrlDecoder().decode(pageToken);
-      String cursor = new String(decoded, StandardCharsets.UTF_8);
-      String[] parts = cursor.split(",", 2);
-      if (parts.length != 2) {
-        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid page token");
-      }
-      return Timestamp.ofTimeSecondsAndNanos(
-          Long.parseLong(parts[0]), Integer.parseInt(parts[1]));
-    } catch (ResponseStatusException e) {
-      throw e;
-    } catch (Exception e) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid page token");
-    }
+    return PaginationUtils.decodePageToken(pageToken);
   }
 
   /**
    * Encodes the {@code createdAt} timestamp of the last document in a query snapshot
    * into an opaque page token for cursor-based pagination.
    *
-   * <p>Returns {@code null} when the snapshot is empty or the last document has no
-   * {@code createdAt} timestamp, indicating there is no next page.
-   *
    * @param querySnapshot the Firestore query result snapshot
    * @return a URL-safe base64 cursor token, or {@code null} if no next page exists
    */
   private String encodeNextPageToken(QuerySnapshot querySnapshot) {
-    return encodeNextPageTokenFromField(querySnapshot, "createdAt");
+    return PaginationUtils.encodeNextPageTokenFromField(querySnapshot, "createdAt");
   }
 
   /**
@@ -725,18 +630,7 @@ public class RecipeService {
    * @return a URL-safe base64 cursor token, or {@code null} if no next page exists
    */
   private String encodeNextPageTokenFromField(QuerySnapshot querySnapshot, String fieldName) {
-    if (querySnapshot.isEmpty()) {
-      return null;
-    }
-    List<? extends DocumentSnapshot> docs = querySnapshot.getDocuments();
-    DocumentSnapshot lastDoc = docs.get(docs.size() - 1);
-    Timestamp lastTimestamp = lastDoc.getTimestamp(fieldName);
-    if (lastTimestamp == null) {
-      return null;
-    }
-    String cursor = lastTimestamp.getSeconds() + "," + lastTimestamp.getNanos();
-    return Base64.getUrlEncoder().withoutPadding()
-        .encodeToString(cursor.getBytes(StandardCharsets.UTF_8));
+    return PaginationUtils.encodeNextPageTokenFromField(querySnapshot, fieldName);
   }
 
   /**
@@ -974,226 +868,47 @@ public class RecipeService {
   }
 
   /**
-   * Save (bookmark) a recipe for a user. Idempotent – calling this multiple times has
-   * no additional effect.
+   * Save (bookmark) a recipe for a user.
    *
    * @param recipeId The recipe ID to save
    * @param userId   The Firebase user ID
-   * @throws ResponseStatusException 404 if the recipe does not exist or is private and not owned
-   *                                 by {@code userId}, 503 if Firestore is unavailable
    */
   public void saveRecipeForUser(String recipeId, String userId) {
-    if (firestore == null) {
-      log.warn("Firestore not configured - cannot save recipe");
-      throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Database not configured");
-    }
-
-    try {
-      // Verify the recipe exists before bookmarking it
-      DocumentReference recipeDocRef = firestore.collection(recipesCollection).document(recipeId);
-      DocumentSnapshot recipeDoc = recipeDocRef.get().get();
-
-      if (!recipeDoc.exists()) {
-        log.warn("Attempt to save non-existent recipe {}", recipeId);
-        throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Recipe not found");
-      }
-
-      Recipe recipe = recipeDoc.toObject(Recipe.class);
-      // Enforce access: treat private recipes not owned by this user as if they don't exist
-      // (to avoid leaking existence of private content)
-      if (recipe != null && !recipe.isPublicRecipe() && !userId.equals(recipe.getUserId())) {
-        log.warn("User {} attempted to save private recipe {} owned by {}",
-            userId, recipeId, recipe.getUserId());
-        throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Recipe not found");
-      }
-
-      // Only create the bookmark if it does not already exist so savedAt reflects first save time
-      DocumentReference savedDocRef = firestore
-          .collection(savedRecipesCollection)
-          .document(userId)
-          .collection("recipes")
-          .document(recipeId);
-
-      firestore.runTransaction(transaction -> {
-        DocumentSnapshot existingSavedDoc = transaction.get(savedDocRef).get();
-        if (!existingSavedDoc.exists()) {
-          Map<String, Object> data = new HashMap<>();
-          data.put("savedAt", com.google.cloud.Timestamp.now());
-          transaction.set(savedDocRef, data);
-        }
-        return null;
-      }).get();
-
-      log.info("Recipe {} saved by user {}", recipeId, userId);
-    } catch (ResponseStatusException e) {
-      throw e;
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      log.error("Error saving recipe bookmark for recipe {} user {}", recipeId, userId, e);
-      throw new RuntimeException("Failed to save recipe", e);
-    } catch (ExecutionException e) {
-      log.error("Error saving recipe bookmark for recipe {} user {}", recipeId, userId, e);
-      throw new RuntimeException("Failed to save recipe", e);
-    }
+    socialService().saveRecipeForUser(recipeId, userId);
   }
 
   /**
-   * Unsave (remove bookmark) a recipe for a user. Idempotent – calling this when the recipe is
-   * not saved is a no-op.
+   * Unsave (remove bookmark) a recipe for a user.
    *
    * @param recipeId The recipe ID to unsave
    * @param userId   The Firebase user ID
-   * @throws ResponseStatusException 503 if Firestore is unavailable
    */
   public void unsaveRecipeForUser(String recipeId, String userId) {
-    if (firestore == null) {
-      log.warn("Firestore not configured - cannot unsave recipe");
-      throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Database not configured");
-    }
-
-    try {
-      // Idempotent delete: no-op if the document does not exist
-      DocumentReference savedDocRef = firestore
-          .collection(savedRecipesCollection)
-          .document(userId)
-          .collection("recipes")
-          .document(recipeId);
-
-      savedDocRef.delete().get();
-
-      log.info("Recipe {} unsaved by user {}", recipeId, userId);
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      log.error("Error unsaving recipe bookmark for recipe {} user {}", recipeId, userId, e);
-      throw new RuntimeException("Failed to unsave recipe", e);
-    } catch (ExecutionException e) {
-      log.error("Error unsaving recipe bookmark for recipe {} user {}", recipeId, userId, e);
-      throw new RuntimeException("Failed to unsave recipe", e);
-    }
+    socialService().unsaveRecipeForUser(recipeId, userId);
   }
 
   /**
-   * Like a recipe for a user. Idempotent – calling this multiple times has no additional effect.
-   * Atomically creates a like document and increments the {@code likeCount} on the recipe.
+   * Like a recipe for a user.
    *
    * @param recipeId The recipe ID to like
    * @param userId   The Firebase user ID
-   * @throws ResponseStatusException 404 if the recipe does not exist,
-   *                                 503 if Firestore is unavailable
    */
   public void likeRecipe(String recipeId, String userId) {
-    if (firestore == null) {
-      log.warn("Firestore not configured - cannot like recipe");
-      throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Database not configured");
-    }
-
-    try {
-      DocumentReference recipeDocRef = firestore.collection(recipesCollection).document(recipeId);
-      DocumentSnapshot recipeDoc = recipeDocRef.get().get();
-
-      if (!recipeDoc.exists()) {
-        log.warn("Attempt to like non-existent recipe {}", recipeId);
-        throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Recipe not found");
-      }
-
-      DocumentReference likeDocRef = firestore
-          .collection(likesCollection)
-          .document(recipeId)
-          .collection("users")
-          .document(userId);
-
-      Boolean isNewLike = firestore.runTransaction(transaction -> {
-        DocumentSnapshot existingLike = transaction.get(likeDocRef).get();
-        if (!existingLike.exists()) {
-          transaction.set(likeDocRef,
-              java.util.Map.of("likedAt", FieldValue.serverTimestamp()));
-          transaction.update(recipeDocRef, "likeCount", FieldValue.increment(1));
-          return true;
-        }
-        return false;
-      }).get();
-
-      if (Boolean.TRUE.equals(isNewLike) && notificationService != null) {
-        Recipe recipe = recipeDoc.toObject(Recipe.class);
-        if (recipe != null && recipe.getUserId() != null && !recipe.getUserId().equals(userId)) {
-          try {
-            String actorName = resolveDisplayName(userId);
-            notificationService.createNotification(
-                recipe.getUserId(),
-                userId,
-                actorName,
-                "RECIPE_LIKE",
-                recipeId,
-                recipe.getRecipeName(),
-                null
-            );
-          } catch (Exception e) {
-            log.warn("Failed to create like notification: {}", e.getMessage());
-          }
-        }
-      }
-
-      log.info("Recipe {} liked by user {}", recipeId, userId);
-    } catch (ResponseStatusException e) {
-      throw e;
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      log.error("Error liking recipe {} for user {}", recipeId, userId, e);
-      throw new RuntimeException("Failed to like recipe", e);
-    } catch (ExecutionException e) {
-      if (e.getCause() instanceof ResponseStatusException rse) {
-        throw rse;
-      }
-      log.error("Error liking recipe {} for user {}", recipeId, userId, e);
-      throw new RuntimeException("Failed to like recipe", e);
-    }
+    socialService().likeRecipe(recipeId, userId);
   }
 
   /**
-   * Unlike a recipe for a user. Idempotent – calling this when the recipe is not liked is a no-op.
-   * Atomically removes the like document and decrements the {@code likeCount} on the recipe.
+   * Unlike a recipe for a user.
    *
    * @param recipeId The recipe ID to unlike
    * @param userId   The Firebase user ID
-   * @throws ResponseStatusException 503 if Firestore is unavailable
    */
   public void unlikeRecipe(String recipeId, String userId) {
-    if (firestore == null) {
-      log.warn("Firestore not configured - cannot unlike recipe");
-      throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Database not configured");
-    }
-
-    try {
-      DocumentReference recipeDocRef = firestore.collection(recipesCollection).document(recipeId);
-      DocumentReference likeDocRef = firestore
-          .collection(likesCollection)
-          .document(recipeId)
-          .collection("users")
-          .document(userId);
-
-      firestore.runTransaction(transaction -> {
-        DocumentSnapshot existingLike = transaction.get(likeDocRef).get();
-        if (existingLike.exists()) {
-          transaction.delete(likeDocRef);
-          transaction.update(recipeDocRef, "likeCount", FieldValue.increment(-1));
-        }
-        return null;
-      }).get();
-
-      log.info("Recipe {} unliked by user {}", recipeId, userId);
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      log.error("Error unliking recipe {} for user {}", recipeId, userId, e);
-      throw new RuntimeException("Failed to unlike recipe", e);
-    } catch (ExecutionException e) {
-      log.error("Error unliking recipe {} for user {}", recipeId, userId, e);
-      throw new RuntimeException("Failed to unlike recipe", e);
-    }
+    socialService().unlikeRecipe(recipeId, userId);
   }
 
   /**
-   * Get the paginated list of recipes saved (bookmarked) by a user,
-   * ordered by save date (newest first).
+   * Get paginated saved recipes for a user.
    *
    * @param userId    The Firebase user ID
    * @param pageToken Opaque cursor token from a previous response (null for first page)
@@ -1201,363 +916,50 @@ public class RecipeService {
    * @return Paginated list of saved recipes
    */
   public PagedRecipeResponse getSavedRecipes(String userId, String pageToken, int size) {
-    if (size < 1) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Page size must be at least 1");
-    }
-    if (size > 100) {
-      throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Page size must not exceed 100");
-    }
-
-    // Validate cursor early to fail fast on bad input
-    com.google.cloud.Timestamp cursor = null;
-    if (pageToken != null && !pageToken.isEmpty()) {
-      cursor = decodePageToken(pageToken);
-    }
-
-    if (firestore == null) {
-      log.warn("Firestore not configured - returning empty paged response");
-      return PagedRecipeResponse.builder()
-          .recipes(new ArrayList<>())
-          .size(size)
-          .totalCount(0)
-          .nextPageToken(null)
-          .build();
-    }
-
-    try {
-      com.google.cloud.firestore.CollectionReference savedRef = firestore
-          .collection(savedRecipesCollection)
-          .document(userId)
-          .collection("recipes");
-
-      // Total count of saved recipes
-      final long totalCount = savedRef.count().get().get().getCount();
-
-      // Build cursor-paginated query ordered by savedAt descending
-      Query pagedQuery = savedRef.orderBy("savedAt", Query.Direction.DESCENDING);
-      if (cursor != null) {
-        pagedQuery = pagedQuery.startAfter(cursor);
-      }
-      pagedQuery = pagedQuery.limit(size);
-
-      QuerySnapshot querySnapshot = pagedQuery.get().get();
-
-      List<RecipeResponse> recipes = new ArrayList<>();
-      List<DocumentReference> recipeRefs = new ArrayList<>();
-      for (DocumentSnapshot savedDoc : querySnapshot.getDocuments()) {
-        recipeRefs.add(firestore.collection(recipesCollection).document(savedDoc.getId()));
-      }
-
-      if (!recipeRefs.isEmpty()) {
-        List<DocumentSnapshot> recipeDocs = firestore
-            .getAll(recipeRefs.toArray(new DocumentReference[0]))
-            .get();
-
-        for (DocumentSnapshot recipeDoc : recipeDocs) {
-          if (recipeDoc.exists()) {
-            Recipe recipe = recipeDoc.toObject(Recipe.class);
-            // Only include recipes accessible to the user (public or owned by them)
-            if (recipe != null
-                && (recipe.isPublicRecipe() || userId.equals(recipe.getUserId()))) {
-              RecipeResponse response = mapToResponse(recipe);
-              response.setSavedByCurrentUser(true);
-              response.setLikeCount(extractLikeCount(recipeDoc));
-              recipes.add(response);
-            }
-          }
-        }
-
-        // Batch-check like status for all saved recipes
-        if (!recipes.isEmpty()) {
-          List<DocumentReference> likeRefs = new ArrayList<>();
-          for (RecipeResponse r : recipes) {
-            likeRefs.add(firestore
-                .collection(likesCollection)
-                .document(r.getId())
-                .collection("users")
-                .document(userId));
-          }
-          List<DocumentSnapshot> likeDocs = firestore
-              .getAll(likeRefs.toArray(new DocumentReference[0]))
-              .get();
-          for (int i = 0; i < likeDocs.size(); i++) {
-            recipes.get(i).setLikedByCurrentUser(likeDocs.get(i).exists());
-          }
-        }
-      }
-
-      String nextToken = encodeNextPageTokenFromField(querySnapshot, "savedAt");
-      log.info("Found {} saved recipes for user {} (size={}, total={})",
-          recipes.size(), userId, size, totalCount);
-      return PagedRecipeResponse.builder()
-          .recipes(recipes)
-          .size(size)
-          .totalCount(totalCount)
-          .nextPageToken(nextToken)
-          .build();
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      log.error("Error fetching saved recipes for user {}", userId, e);
-      throw new RuntimeException("Failed to fetch saved recipes", e);
-    } catch (ExecutionException e) {
-      log.error("Error fetching saved recipes for user {}", userId, e);
-      throw new RuntimeException("Failed to fetch saved recipes", e);
-    }
+    return socialService().getSavedRecipes(userId, pageToken, size);
   }
 
-  /**
-   * Check whether a specific recipe is liked by a user.
-   *
-   * @param recipeId The recipe ID
-   * @param userId   The Firebase user ID
-   * @return {@code true} if the recipe is liked, {@code false} otherwise
-   *         (including when Firestore is unavailable)
-   */
-  private boolean isRecipeLikedByUser(String recipeId, String userId) {
-    if (firestore == null || recipeId == null || userId == null) {
-      return false;
-    }
-    try {
-      DocumentSnapshot doc = firestore
-          .collection(likesCollection)
-          .document(recipeId)
-          .collection("users")
-          .document(userId)
-          .get().get();
-      return doc != null && doc.exists();
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      log.warn("Interrupted while checking like status for recipe {} user {}: {}",
-          recipeId, userId, e.getMessage());
-      return false;
-    } catch (Exception e) {
-      log.warn("Failed to check like status for recipe {} user {}: {}",
-          recipeId, userId, e.getMessage());
-      return false;
-    }
+  boolean isRecipeLikedByUser(String recipeId, String userId) {
+    return socialService().isRecipeLikedByUser(recipeId, userId);
   }
 
-  /**
-   * Extract the like count from a Firestore document snapshot.
-   *
-   * @param doc The Firestore document snapshot
-   * @return The like count, or 0 if not present
-   */
-  private int extractLikeCount(DocumentSnapshot doc) {
-    if (doc == null) {
-      return 0;
-    }
-    Long count = doc.getLong("likeCount");
-    return count != null ? count.intValue() : 0;
+  int extractLikeCount(DocumentSnapshot doc) {
+    return socialService().extractLikeCount(doc);
   }
 
-  /**
-   * Check whether a specific recipe is saved (bookmarked) by a user.
-   *
-   * @param recipeId The recipe ID
-   * @param userId   The Firebase user ID
-   * @return {@code true} if the recipe is saved, {@code false} otherwise
-   *         (including when Firestore is unavailable)
-   */
-  private boolean isRecipeSavedByUser(String recipeId, String userId) {
-    if (firestore == null || recipeId == null || userId == null) {
-      return false;
-    }
-    try {
-      DocumentSnapshot doc = firestore
-          .collection(savedRecipesCollection)
-          .document(userId)
-          .collection("recipes")
-          .document(recipeId)
-          .get().get();
-      return doc != null && doc.exists();
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      log.warn("Interrupted while checking saved status for recipe {} user {}: {}",
-          recipeId, userId, e.getMessage());
-      return false;
-    } catch (Exception e) {
-      log.warn("Failed to check saved status for recipe {} user {}: {}",
-          recipeId, userId, e.getMessage());
-      return false;
-    }
+  boolean isRecipeSavedByUser(String recipeId, String userId) {
+    return socialService().isRecipeSavedByUser(recipeId, userId);
   }
 
-  /**
-   * Batch-check and populate liked and saved statuses for a list of recipes.
-   *
-   * @param recipes The list of recipe responses to populate
-   * @param userId The Firebase UID of the current user
-   */
-  private void populateLikeAndSaveStatuses(List<RecipeResponse> recipes, String userId) {
-    if (firestore == null || userId == null || recipes == null || recipes.isEmpty()) {
-      return;
-    }
-    try {
-      List<DocumentReference> likeRefs = new ArrayList<>(recipes.size());
-      List<DocumentReference> saveRefs = new ArrayList<>(recipes.size());
-      for (RecipeResponse r : recipes) {
-        likeRefs.add(firestore
-            .collection(likesCollection)
-            .document(r.getId())
-            .collection("users")
-            .document(userId));
-        saveRefs.add(firestore
-            .collection(savedRecipesCollection)
-            .document(userId)
-            .collection("recipes")
-            .document(r.getId()));
-      }
-      List<DocumentSnapshot> likeDocs = firestore
-          .getAll(likeRefs.toArray(new DocumentReference[0]))
-          .get();
-      List<DocumentSnapshot> saveDocs = firestore
-          .getAll(saveRefs.toArray(new DocumentReference[0]))
-          .get();
-      for (int i = 0; i < recipes.size(); i++) {
-        if (i < likeDocs.size()) {
-          recipes.get(i).setLikedByCurrentUser(likeDocs.get(i).exists());
-        }
-        if (i < saveDocs.size()) {
-          recipes.get(i).setSavedByCurrentUser(saveDocs.get(i).exists());
-        }
-      }
-    } catch (InterruptedException e) {
-      Thread.currentThread().interrupt();
-      log.warn("Interrupted while checking like/save status for user {}: {}",
-          userId, e.getMessage());
-    } catch (Exception e) {
-      log.warn("Failed to check like/save status for user {}: {}",
-          userId, e.getMessage());
-    }
+  void populateLikeAndSaveStatuses(List<RecipeResponse> recipes, String userId) {
+    socialService().populateLikeAndSaveStatuses(recipes, userId);
   }
 
   /**
    * Map Recipe entity to RecipeResponse DTO.
    */
   RecipeResponse mapToResponse(Recipe recipe) {
-    Map<String, Object> nutritionMap = null;
-    if (recipe.getNutritionalInfo() != null
-        && recipe.getNutritionalInfo().getPerServing() != null) {
-      // Simplified mapping: we return only perServing values as flat map to match API
-      // contract
-      nutritionMap = recipe.getNutritionalInfo().getPerServing().toMap();
-    }
-
-    Map<String, List<String>> tipsMap = null;
-    if (recipe.getTips() != null) {
-      // Simplified mapping for now, based on RecipeTips having simple conversion
-      // available
-      // Note: RecipeTips.toMap() currently returns null or specific map, need to
-      // check implementation
-      // The shared model toMap returns "substitutions" and "variations" only.
-      try {
-        tipsMap = recipe.getTips().toMap();
-      } catch (Exception e) {
-        log.warn("Failed to map tips", e);
-        tipsMap = null;
-      }
-    }
-
-    return RecipeResponse.builder()
-        .id(recipe.getId())
-        .userId(recipe.getUserId())
-        .title(recipe.getRecipeName())
-        .description(recipe.getDescription())
-        .ingredients(recipe.getIngredients())
-        .instructions(recipe.getInstructions())
-        .prepTime(recipe.getPrepTimeMinutes())
-        .cookTime(recipe.getCookTimeMinutes())
-        .totalTime(recipe.getCalculatedTotalTimeMinutes())
-        .servings(recipe.getServings())
-        .nutrition(nutritionMap)
-        .tips(tipsMap)
-        .imageUrl(recipe.getImageUrl())
-        .source(recipe.getSource())
-        .createdAt(recipe.getCreatedAt())
-        .updatedAt(recipe.getUpdatedAt())
-        .tags(recipe.getTags())
-        .dietaryRestrictions(recipe.getDietaryRestrictions())
-        .isPublic(recipe.isPublicRecipe())
-        .build();
+    return mapper().mapToResponse(recipe);
   }
 
   /**
-   * Helper record to hold resolved author metadata (display name and avatar URL).
-   */
-  private record AuthorInfo(String displayName, String avatarUrl) {}
-
-  /**
-   * Helper to resolve author metadata (display name and avatar URL) from Firestore profile
-   * or Firebase Auth.
+   * Helper to resolve author metadata from Firestore profile or Firebase Auth.
    *
    * @param userId The user ID
    * @return The resolved author information
    */
-  private AuthorInfo resolveAuthorInfo(String userId) {
-    if (userId == null) {
-      return new AuthorInfo(null, null);
-    }
-    String displayName = null;
-    String avatarUrl = null;
-
-    if (firestore != null && usersCollection != null) {
-      try {
-        DocumentSnapshot userDoc =
-            firestore.collection(usersCollection).document(userId).get().get();
-        if (userDoc.exists()) {
-          String docDisplayName = userDoc.getString("displayName");
-          if (docDisplayName != null && !docDisplayName.isBlank()) {
-            displayName = docDisplayName;
-          }
-          String docAvatarUrl = userDoc.getString("avatarUrl");
-          if (docAvatarUrl != null && !docAvatarUrl.isBlank()) {
-            avatarUrl = docAvatarUrl;
-          }
-        }
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        log.warn("Interrupted while resolving profile for user {}", userId);
-      } catch (ExecutionException e) {
-        log.warn("Failed to resolve profile from Firestore for user {}: {}",
-            userId, e.getMessage());
-      } catch (Exception e) {
-        log.warn("Unexpected error resolving profile from Firestore for user {}: {}",
-            userId, e.getMessage());
-      }
-    }
-
-    if (firebaseAuth != null && (displayName == null || avatarUrl == null)) {
-      try {
-        UserRecord userRecord = firebaseAuth.getUser(userId);
-        if (userRecord != null) {
-          if (displayName == null && userRecord.getDisplayName() != null
-              && !userRecord.getDisplayName().isBlank()) {
-            displayName = userRecord.getDisplayName();
-          }
-          if (avatarUrl == null && userRecord.getPhotoUrl() != null
-              && !userRecord.getPhotoUrl().isBlank()) {
-            avatarUrl = userRecord.getPhotoUrl();
-          }
-        }
-      } catch (FirebaseAuthException e) {
-        log.warn("Failed to resolve profile from Firebase Auth for user {}: {}",
-            userId, e.getMessage());
-      }
-    }
-
-    return new AuthorInfo(displayName, avatarUrl);
+  AuthorInfo resolveAuthorInfo(String userId) {
+    return authorService().resolveAuthorInfo(userId);
   }
 
   /**
-   * Resolve a user's display name from Firestore profile or Firebase Auth,
-   * returning null on failure.
+   * Resolve a user's display name from Firestore profile or Firebase Auth.
    *
    * @param userId The Firebase user ID
    * @return The display name, or null if lookup fails or auth is unavailable
    */
-  private String resolveDisplayName(String userId) {
-    return resolveAuthorInfo(userId).displayName();
+  String resolveDisplayName(String userId) {
+    return authorService().resolveDisplayName(userId);
   }
 
   /**
@@ -1566,29 +968,21 @@ public class RecipeService {
    * @param userId The Firebase user ID
    * @return The avatar URL, or null if not set or lookup fails
    */
-  private String resolveAvatarUrl(String userId) {
-    return resolveAuthorInfo(userId).avatarUrl();
+  String resolveAvatarUrl(String userId) {
+    return authorService().resolveAvatarUrl(userId);
   }
 
   /**
    * Helper to map nutrition map to NutritionalInfo.
    */
   private NutritionalInfo mapToNutritionalInfo(Map<String, Object> nutritionMap) {
-    if (nutritionMap == null) {
-      return null;
-    }
-    return NutritionalInfo.builder()
-        .perServing(com.recipe.shared.model.NutritionValues.fromMap(nutritionMap))
-        .build();
+    return mapper().mapToNutritionalInfo(nutritionMap);
   }
 
   /**
    * Helper to map tips map to RecipeTips.
    */
   private com.recipe.shared.model.RecipeTips mapToRecipeTips(Map<String, List<String>> tipsMap) {
-    if (tipsMap == null) {
-      return null;
-    }
-    return com.recipe.shared.model.RecipeTips.fromMap(tipsMap);
+    return mapper().mapToRecipeTips(tipsMap);
   }
 }
