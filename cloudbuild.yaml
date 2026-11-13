@@ -32,21 +32,21 @@ steps:
         fi
 
   # Run Maven tests (parallel with linting)
-  - name: 'maven:3.9-eclipse-temurin-21'
+  - name: 'maven:3.10-eclipse-temurin-21'
     id: 'test-storage'
     entrypoint: 'mvn'
     args: ['-s', '/workspace/.m2/settings.xml', 'test', '-B', '-Dmaven.repo.local=/workspace/.m2/repository']
     waitFor: ['configure-maven-settings']  # Wait for Maven settings to be configured
 
   # Run linting (Checkstyle) - parallel with tests
-  - name: 'maven:3.9-eclipse-temurin-21'
+  - name: 'maven:3.10-eclipse-temurin-21'
     id: 'lint-storage'
     entrypoint: 'mvn'
     args: ['-s', '/workspace/.m2/settings.xml', 'validate', '-B', '-Dmaven.repo.local=/workspace/.m2/repository']
     waitFor: ['configure-maven-settings']  # Wait for Maven settings to be configured
 
   # Build the application JAR (skip on PR builds)
-  - name: 'maven:3.9-eclipse-temurin-21'
+  - name: 'maven:3.10-eclipse-temurin-21'
     id: 'build-storage'
     entrypoint: 'bash'
     args:
